@@ -2,3 +2,9 @@ nervos_network/target
 nervos_network/src/ledger/*.json
 nervos_network/src/ledger/txs/*.json
 nervos_network/.claude
+/my-ccc-app
+/ideas.md
+/docs.nervos.org
+/ckb-script-templates
+/ckb-rust-script
+

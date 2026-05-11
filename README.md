@@ -30,3 +30,9 @@ A ground-up Rust implementation of the CKB (Nervos Network) blockchain core, bui
 - **CLI tool (`ckb`)** — a clap-based interactive CLI for generating accounts, deriving addresses, managing the live cell ledger, and building/signing/validating transactions. Install with `cargo install --path nervos_network` and use from any directory.
 
 See [`nervos_network/README.md`](nervos_network/README.md) for full CLI documentation and a worked Alice→Bob transfer example.
+
+### Week 2: [04-05-2026 to 11-05-2026]
+- Learning about the remaning terms on the block propagation like Block structure, proposal id's, the pow, nonce (solution of the pow puzzle)
+- Learning and using the docs.nervos.org [repo](https://docs.nervos.org/docs/getting-started/quick-start#-build-a-dapp)
+- Learning how to build smart contracts / scripts in CkB [link](https://docs.nervos.org/docs/getting-started/quick-start#-write-smart-contracts-scripts)
+- 
