@@ -35,4 +35,8 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 - Learning about the remaning terms on the block propagation like Block structure, proposal id's, the pow, nonce (solution of the pow puzzle)
 - Learning and using the docs.nervos.org [repo](https://docs.nervos.org/docs/getting-started/quick-start#-build-a-dapp)
 - Learning how to build smart contracts / scripts in CkB [link](https://docs.nervos.org/docs/getting-started/quick-start#-write-smart-contracts-scripts)
+
+### Week 3: [11-05-2026 to 18-05-20226]
+- Understanding / Building risc-v for ckb environment understanding.
+- Truthixify intro to ckb 45 minutes notes.
 - 
