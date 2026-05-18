@@ -39,4 +39,3 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 ### Week 3: [11-05-2026 to 18-05-20226]
 - Understanding / Building risc-v for ckb environment understanding.
 - Truthixify intro to ckb 45 minutes notes.
-- 
