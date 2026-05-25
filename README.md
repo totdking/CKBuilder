@@ -39,3 +39,11 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 ### Week 3: [11-05-2026 to 18-05-20226]
 - Understanding / Building risc-v for ckb environment understanding.
 - Truthixify intro to ckb 45 minutes notes.
+
+### Week 4 : [18-05-2026 to 25-05-2026]
+- started building a RV64IMC similar to cvm environment to help with security in low level ckb
+- Learnt about how instructions bit are formed and selected when passed into vm's.
+- Started reading the risc-v manual
+- learnt about opcodes, the use, how bits are isolated and masked using bit-shift and OR operations
+- Learnt how bytes are read and collected from memory with how the program counter helps in getting instructions to be used for said memory
+- Learnt about how cycles are to be used in gas for ckb and how to prevent cycle gas exhaustion through unbounded computation
