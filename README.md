@@ -47,3 +47,8 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 - learnt about opcodes, the use, how bits are isolated and masked using bit-shift and OR operations
 - Learnt how bytes are read and collected from memory with how the program counter helps in getting instructions to be used for said memory
 - Learnt about how cycles are to be used in gas for ckb and how to prevent cycle gas exhaustion through unbounded computation
+
+### Week 5: [25-05-2026 to 1-06-2026]
+- Learnt about ix types for risc-v and the ones that ckb uses and how it uses them in ix execution
+- While executing a JAL (Jump and Link) ix, I learnt about how the immediate storage in the vm handles bit scrambling.
+- Learnt about how to use arithmetic right shift(right shift on signed integers) to handle -ve / +ve jumps in memory.
