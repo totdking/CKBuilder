@@ -9,7 +9,11 @@ fn main() {
     let mock_ckbvm = CkbVm::new(mem);
 
     let first_4_bytes = mock_ckbvm.fetch().unwrap();
-    println!("first 4 bytes in hex {:#10x}", first_4_bytes);
-    println!("first 4 bytes in bin {:#034b}", first_4_bytes)
+    // println!("first 4 bytes in hex {:#10x}", first_4_bytes);
+    // println!("first 4 bytes in bin {:#034b}", first_4_bytes);
+    // let a = 0b100101;
+    // let lrhs = a >> 31;
+    // let arhs = (a << 31) >> 31;
+    // println!("lrhs: {:#034b} \n arhs {:#034b}", lrhs, arhs);
     
 }

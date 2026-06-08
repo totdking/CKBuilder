@@ -1,5 +1,6 @@
+//! This file helps with the getting of fields of the R-type Ix
 pub fn get_opcode(bit: u32) -> u32{
-    bit & 0b111111
+    bit & 0b1111111
 }
 
 /// accepts 32 bits 0x00A58533 and isolates bits 7–11 to extract the destination register (rd).

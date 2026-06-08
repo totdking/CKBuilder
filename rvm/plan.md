@@ -18,11 +18,11 @@
   - `ADDI` (Add Immediate): Decode opcode, extract the immediate, add to `rs1`, store in `rd`.
   - `JAL` (Jump and Link): Decode offset, mutate `pc`.
   - `ECALL` (Environment Call): Print register state and `break` the loop.
-- [ ] **Verification:** Hardcode a byte array representing `ADDI`, `ADDI`, `ECALL`. Run the loop and verify the array mutation.
+- [ ] **Verification:** Hardcode a byte array representing `JAL`, `ADDI`, `ECALL`. Run the loop and verify the array mutation.
 
 ## Phase 2: Complete the RV64I Baseline
 **Objective:** Map the standard 64-bit integer instruction set required for basic C logic.
-- [ ] **Instruction Decoding:** Create an `Instruction` enum representing the RISC-V formats (R-type, I-type, S-type, B-type, U-type, J-type). Write a dispatcher mapping 32-bit values to these enums.
+- [*] **Instruction Decoding:** Create an `Instruction` enum representing the RISC-V formats (R-type, I-type, S-type, B-type, U-type, J-type). Write a dispatcher mapping 32-bit values to these enums.
 - [ ] **Sign-Extension Logic:** Implement proper sign-extension. (e.g., propagating the 12th bit of an I-type immediate across the remaining 52 bits of a `u64`). *Failure here corrupts all branch calculations.*
 - [ ] **Memory Operations:** Implement load/store instructions (`LD`, `SD`, `LW`, `SW`).
 - [ ] **Control Flow:** Implement all branching instructions (`BEQ`, `BNE`, `BLT`, `BGE`).

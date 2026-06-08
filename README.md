@@ -52,3 +52,12 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 - Learnt about ix types for risc-v and the ones that ckb uses and how it uses them in ix execution
 - While executing a JAL (Jump and Link) ix, I learnt about how the immediate storage in the vm handles bit scrambling.
 - Learnt about how to use arithmetic right shift(right shift on signed integers) to handle -ve / +ve jumps in memory.
+
+### Week 6: [1-06-2026 to 7-06-2026]
+- Learnt the difference between instruction format types (R/I/S/B/U/J) and instruction functional groups — format describes the bit layout, opcode identifies the functional group (e.g. OP-IMM, SYSTEM, LOAD), and multiple groups can share the same layout.
+- Learnt that the opcode (bits 6:0) routes an instruction to its functional group (the "department"), while funct3 and funct7 identify the exact operation within that group — two-level decode: opcode → group, funct3/funct7 → specific instruction.
+- Learnt that ECALL and EBREAK share I-type bit layout but use their own SYSTEM opcode (`0b1110011`), separate from OP-IMM (`0b0010011`) — "I-type" only describes the shape of the bits, not the purpose.
+- Learnt that store instructions (S-type) have no `rd` field — the bits where `rd` would sit are repurposed for the upper half of the immediate, since stores write to memory via `rs1 + imm` using the value in `rs2`.
+- Learnt that the sign bit for all immediates is always bit 31 (the MSB) across every instruction format — a deliberate RISC-V design choice to allow sign-extension to begin before the format is fully decoded.
+- Learnt that while the sign bit is always bit 31, the reassembly of the full immediate differs per format — I-type is straightforward, S/B-types split the immediate across two fields, and J-type scrambles bits to maximise overlap with other formats.
+- Built the instruction dispatcher in `instructions.rs` — a function that extracts the opcode and matches it to an `Instruction` enum variant, returning `Ok(variant)` for known opcodes and `Err` with the raw binary opcode for unknowns.
