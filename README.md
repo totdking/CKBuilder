@@ -61,3 +61,13 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 - Learnt that the sign bit for all immediates is always bit 31 (the MSB) across every instruction format — a deliberate RISC-V design choice to allow sign-extension to begin before the format is fully decoded.
 - Learnt that while the sign bit is always bit 31, the reassembly of the full immediate differs per format — I-type is straightforward, S/B-types split the immediate across two fields, and J-type scrambles bits to maximise overlap with other formats.
 - Built the instruction dispatcher in `instructions.rs` — a function that extracts the opcode and matches it to an `Instruction` enum variant, returning `Ok(variant)` for known opcodes and `Err` with the raw binary opcode for unknowns.
+
+### Week 7: [8-06-2026 to 15-06-2026]
+- Learnt that `memory: Vec<u8>` is a flat byte array and every address is just an index into it — address `0x108` means `memory[0x108]`, nothing more.
+- Learnt that a load computes `addr = registers[rs1] + imm`, reads N bytes from `memory[addr]`, assembles them little-endian into a `u64`, and writes the result into `rd` — the same byte-assembly technique already used in `fetch_ix_at`.
+- Learnt that a store computes the same address formula but moves data in the opposite direction: splits a register value into N bytes with `to_le_bytes()` and writes them into `memory[addr]`.
+- Learnt that loads are I-type (use `get_imm_i`) while stores are S-type (use `get_imm_s`) — the immediate is split across two bit fields in S-type because the `rd` slot is repurposed for `rs2`.
+- Learnt that stores have no `rd` — `rs2` is the data source and `rs1` is the base address, making the assembly syntax read as data-first, address-second (`SW x3, -4(x2)`).
+- Learnt the distinction between signed and unsigned load variants: `LW` sign-extends 4 bytes to 64 bits (so `0xFFFFFFFF` becomes `-1`), `LWU` zero-extends the same bytes (becoming `+4294967295`), and `LD` reads all 8 bytes with no extension needed.
+- Learnt that stores have no unsigned variants — narrowing a 64-bit register to 1/2/4 bytes always just truncates, so the signed/unsigned distinction is meaningless.
+- Implemented `load()` and `store()` in `ckbvm.rs` — both dispatch on `funct3` to select byte width, use `wrapping_add` on a signed immediate for correct negative offsets, and advance `pc` after execution.

@@ -42,8 +42,6 @@ pub fn dispatch(raw: u32) -> Result<Instruction> {
     }
 }
 
-// pub fn sign_extend(value: u64, bit_width: u32) -> i64{}
-// The sign bit is the msb i.e. bit 31 of the u32 
 impl Instruction {
     pub fn dispatcher (&self) -> Self{
         todo!()

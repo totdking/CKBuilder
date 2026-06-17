@@ -1,8 +1,9 @@
 use anyhow::{Ok, Result, anyhow};
-const JAL: u32 = 0b1101111; // 111
+use crate::instructions::decode::{get_funct3, get_imm_i, get_imm_j, get_imm_s, get_rd, get_rs1, get_rs2, sign_extend};
+
+const JAL: u32   = 0b1101111; // 111
 const ADD_I: u32 = 0b0010011; // 19
 const ECALL: u32 = 0b1110011; // 115
-// const ADD: u32 = 
 
 
 pub struct CkbVm{
@@ -22,13 +23,14 @@ impl CkbVm{
             memory
         }
     }
+    // for debugging / testing
     pub fn register(&self, idx: usize) -> u64 {
         self.registers[idx]
     }
 
     // for debugging and testing
     pub fn fetch_ix_at(&self, addr: usize) -> Result<u32> {
-        if addr + 4 > self.memory.len() {
+        if (addr + 4) > self.memory.len() {
             return Err(anyhow!("Address {:#?} out of bounds", &addr));
         }
         Ok(u32::from_le_bytes([
@@ -49,7 +51,7 @@ impl CkbVm{
         Ok(raw)
     }
 
-    // fetches the ix from memory w
+    /// Determines the type of jump whether a 2(16-bit compressed) or a 4(32 bit jump)
     fn get_ix_jump(&self) -> u32 {
         // get the program counter which would be the index we fetch memory from 
         let mem_address = self.pc as usize;
@@ -60,16 +62,130 @@ impl CkbVm{
         return 2;
     }
 
-    // Execute should be able to execute whatever ix passed in from add, jal, ECALL, ADD, etc
+    // Execute should be able to execute whatever ix passed in from add, jal, ECALL, ADD, load , store etc
+    // This will be the entrypoint of the entire thing
     pub fn execute(&mut self, bit: u32){
         self.registers[0] = 0; // We must make sure no matter what the registers[0] must be zero what i 
         // self.
     }
 
-    pub fn store(){}
+    // take N bytes from a register an write in to memory at "some address"
+    pub fn store(&mut self, ix: u32) -> Result<()>{
+        let raw = ix;
+        let rs1 = get_rs1(raw) as usize;
+        let rs2 = get_rs2(raw) as usize;
+        let funct3 = get_funct3(raw);
+        let imm = get_imm_s(raw);
+
+        // unlike load that has rd(destination register), store uses the registers[rs2] as the source where data would be carried from
+        // and (registers[rs1] + imm) as the memory address to store the data in memory
+        let value = self.registers[rs2];
+        let mem_addr = (self.registers[rs1] as i64).wrapping_add(imm) as usize;
+        match funct3 {
+            0b000 => { /* SB - 1 byte */
+                self.memory[mem_addr] = value as u8;
+            }
+            0b001 => { /* SH - 2 bytes */ 
+                let val_bytes = (value as u16).to_le_bytes();
+                self.memory[mem_addr] = val_bytes[0];
+                self.memory[mem_addr + 1] = val_bytes[1];
+            }
+            0b010 => { /* SW - 4 bytes */
+                let val_bytes = (value as u32).to_le_bytes();
+                self.memory[mem_addr] = val_bytes[0];
+                self.memory[mem_addr + 1] = val_bytes[1];
+                self.memory[mem_addr + 2] = val_bytes[2];
+                self.memory[mem_addr + 3] = val_bytes[3];
+            }
+            0b011 => { /* SD - 8 bytes */ 
+                let val_bytes = (value as u64).to_le_bytes();
+                self.memory[mem_addr] = val_bytes[0];
+                self.memory[mem_addr + 1] = val_bytes[1];
+                self.memory[mem_addr + 2] = val_bytes[2];
+                self.memory[mem_addr + 3] = val_bytes[3];
+                self.memory[mem_addr + 4] = val_bytes[4];
+                self.memory[mem_addr + 5] = val_bytes[5];
+                self.memory[mem_addr + 6] = val_bytes[6];
+                self.memory[mem_addr + 7] = val_bytes[7];
+            }
+            _ => return Err(anyhow!("Unknown store funct3: {:#05b}", funct3))
+        }
+        self.pc += self.get_ix_jump() as u64;
+        Ok(())
+    }
     
-    /// ### Load current state of Vm from mem
-    pub fn load(&self){}
+    // Go to some address in mem, grab N bytes and put the assembled value in a register
+    pub fn load(&mut self, ix: u32) -> Result<()>{
+        let raw = ix;
+        let rd = get_rd(raw) as usize;
+        let rs1 = get_rs1(raw);
+        let imm = get_imm_i(raw);
+        let funct3 = get_funct3(raw);
+        // get the mem_addr
+        let mem_addr = (self.registers[rs1 as usize] as i64).wrapping_add(imm) as usize;
+        // sice we're writing from memory to register, we have to fill in the blank bytes with the intended sign
+        match funct3 {
+            0b000 => {/* LB */ // 1 byte
+                if rd != 0{
+                    let value = self.memory[mem_addr] as u64;
+                    self.registers[rd] = sign_extend(value, 8) as u64 ;
+                }
+            }
+            0b001 => { /* LH  */ // 2 bytes
+                if rd != 0{
+                    let value = u16::from_le_bytes([self.memory[mem_addr], self.memory[mem_addr + 1]]) as u64;
+                    self.registers[rd] = sign_extend(value, 16) as u64 ;
+                }
+            }
+            0b010 => { /* LW  */ // 4 bytes
+                if rd !=0 {
+                    let mut val_arr: [u8;4] = [0_u8, 0_u8, 0_u8, 0_u8];
+                    for i in 0..4 {
+                        let arr_denom = self.memory[mem_addr + i];
+                        val_arr[i] = arr_denom;
+                    }
+                    let value = u32::from_le_bytes(val_arr) as u64;
+                    self.registers[rd] = sign_extend(value, 32) as u64;
+                }
+            }
+            0b011 => { /* LD  */ // 8 bytes
+                if rd !=0 {
+                    let mut val_arr: [u8;8] = [0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8];
+                    for i in 0..8 {
+                        let arr_denom = self.memory[mem_addr + i];
+                        val_arr[i] = arr_denom;
+                    }
+                    let value = u64::from_le_bytes(val_arr);
+                    self.registers[rd] = value;
+                }
+            }
+            0b100 => { /* LBU */ // 1 byte unsigned
+                if rd != 0 {     
+                    self.registers[rd] = self.memory[mem_addr] as u64;
+                }
+            }
+            0b101 => { /* LHU */ // 2 bytes unsigned
+                if rd != 0{
+                    let value = u16::from_le_bytes([self.memory[mem_addr], self.memory[mem_addr + 1]]) as u64;
+                    self.registers[rd] = value;
+                }
+            }
+            0b110 => { /* LWU */ 
+                if rd !=0 {
+                    let mut val_arr: [u8;4] = [0_u8, 0_u8, 0_u8, 0_u8];
+                    for i in 0..4 {
+                        let arr_denom = self.memory[mem_addr + i];
+                        val_arr[i] = arr_denom;
+                    }
+                    let value = u32::from_le_bytes(val_arr) as u64;
+                    self.registers[rd] = value as u64;
+                }
+            }
+            _ => return Err(anyhow!("Unknown load funct3: {:#05b}", funct3))
+        };
+        self.pc += self.get_ix_jump() as u64;
+        Ok(())
+    }
     
     /// Environment Call
     /// This has 3 parameters: opcode(0-6), rd(7-11), funct3(12-14), rs1(15-19), funct12(20-31)
@@ -126,7 +242,7 @@ impl CkbVm{
 
     // add_immediate function
     // it is an I-type of ix with format : opcode(7), rd(5 bits), funct3(3 bits), rs1(5 bits), imm(12 bits)
-    // 0-6, 7-11, 12-14, 15-19, 20-32 
+    // 0-6, 7-11, 12-14, 15-19, 20-31
     pub fn add_i(&mut self, ix_bit: u32) -> Result<()>{
         // isolate all parts of it
         let raw = ix_bit;
@@ -136,16 +252,14 @@ impl CkbVm{
             return Err(anyhow!("Not a valid ADD_I opcode"));
         }
 
-        let rd = (raw >> 7) & 0b11111;
+        let rd  = (raw >> 7)  & 0b11111;
         let rs1 = (raw >> 15) & 0b11111;
-    
+
         let funct3 = (raw >> 12) & 0b111;
         assert!(funct3 == 0b000);
 
-        let imm = (raw >> 20) & 0xFFF;
-        let signed_imm = ((imm as i64) << 52) >> 52;
-        // save in the register destination the register source is plus the signed immidiate
-        if rd !=0 {
+        let signed_imm = get_imm_i(raw); // sign-extended 12-bit immediate
+        if rd != 0 {
             self.registers[rd as usize] = self.registers[rs1 as usize].wrapping_add(signed_imm as u64);
         }
         let ix_size = self.get_ix_jump() as u64;
@@ -175,26 +289,7 @@ impl CkbVm{
             self.registers[rd as usize] = save_addr;    
         }
 
-        // isolate the imm / immediate (12-31)
-        // let imm = (raw >> 12) & 0b11111111111111111111; 
-        let imm_1_10 = (raw >> 21) & 0b1111111111; // gotten from bit 21-30
-        let imm_11 = (raw >> 20) & 0b1; // gotten from bit 20
-        let imm_12_19 = (raw >> 12) &0b11111111; // gotten from bit 12-19
-        let imm_20 = (raw >> 31) & 0b1; // gotten from bit 31
-
-        // The final immediate is 21 bits
-        let final_imm = imm_12_19 << 12 | imm_11 << 11 | imm_1_10 << 1 | imm_20 << 20;
-
-        // if bit (index[20] 21st bit) 20 is 1(-ve) since it will still be that same bit 20 at the msb
-        // the arithmetic right shift fills the holes with copies of the msb which
-        // is 1 from the check above
-        // right shift on signed integers behave like this
-        let signed = ((final_imm as i64) << 43) >> 43;
-        // This just shifts the values from [20] to msb and repopulates with 1 to ensure it is -ve or +ve 
-        // with arithmetic rhs
-
-        // overwrite pc with target
-        // Jump pc to the target address
+        let signed = get_imm_j(raw); // sign-extended 21-bit J-type immediate
         self.pc = self.pc.wrapping_add_signed(signed);
         Ok(())
     }

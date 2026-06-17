@@ -22,9 +22,9 @@
 
 ## Phase 2: Complete the RV64I Baseline
 **Objective:** Map the standard 64-bit integer instruction set required for basic C logic.
-- [*] **Instruction Decoding:** Create an `Instruction` enum representing the RISC-V formats (R-type, I-type, S-type, B-type, U-type, J-type). Write a dispatcher mapping 32-bit values to these enums.
-- [ ] **Sign-Extension Logic:** Implement proper sign-extension. (e.g., propagating the 12th bit of an I-type immediate across the remaining 52 bits of a `u64`). *Failure here corrupts all branch calculations.*
-- [ ] **Memory Operations:** Implement load/store instructions (`LD`, `SD`, `LW`, `SW`).
+- [x] **Instruction Decoding:** Create an `Instruction` enum representing the RISC-V formats (R-type, I-type, S-type, B-type, U-type, J-type). Write a dispatcher mapping 32-bit values to these enums.
+- [x] **Sign-Extension Logic:** Implement proper sign-extension. (e.g., propagating the 12th bit of an I-type immediate across the remaining 52 bits of a `u64`). *Failure here corrupts all branch calculations.*
+- [x] **Memory Operations:** Implement load/store instructions (`LD`, `SD`, `LW`, `SW`).
 - [ ] **Control Flow:** Implement all branching instructions (`BEQ`, `BNE`, `BLT`, `BGE`).
 
 ## Phase 3: The CKB Bridge (Memory and Syscalls)
