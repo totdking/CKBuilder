@@ -1,17 +1,19 @@
 pub mod hex_serde;
 
-use std::path::{Path, PathBuf};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-use crate::data::{Account, CkbScript};
 use crate::data::cell::CkbCell;
-use crate::network::transaction::{CKBTransaction, CellDep, CellInput, CellOutput, OutPoint, WitnessArgs};
+use crate::data::{Account, CkbScript};
 use crate::network::rpc::{
-    CkbRpcClient, DEVNET_RPC, Network, SECP256K1_CODE_HASH, SECP256K1_DEP_INDEX,
-    SECP256K1_DEP_TYPE, MIN_CELL_CAPACITY, select_cells, estimate_fee,
+    CkbRpcClient, DEVNET_RPC, MIN_CELL_CAPACITY, Network, SECP256K1_CODE_HASH, SECP256K1_DEP_INDEX,
+    SECP256K1_DEP_TYPE, estimate_fee, select_cells,
+};
+use crate::network::transaction::{
+    CKBTransaction, CellDep, CellInput, CellOutput, OutPoint, WitnessArgs,
 };
 
 // ── Config file ───────────────────────────────────────────────────────────────
@@ -24,7 +26,10 @@ struct CkbConfig {
 /// ~/.config/ckb/config.json
 fn default_config_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("ckb").join("config.json")
+    PathBuf::from(home)
+        .join(".config")
+        .join("ckb")
+        .join("config.json")
 }
 
 fn load_config() -> CkbConfig {
@@ -34,7 +39,9 @@ fn load_config() -> CkbConfig {
             return cfg;
         }
     }
-    CkbConfig { network: Network::Testnet }
+    CkbConfig {
+        network: Network::Testnet,
+    }
 }
 
 fn save_config(cfg: &CkbConfig) -> Result<()> {
@@ -68,7 +75,10 @@ impl KeyFile {
 /// ~/.config/ckb/key.json
 fn default_keypair_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("ckb").join("key.json")
+    PathBuf::from(home)
+        .join(".config")
+        .join("ckb")
+        .join("key.json")
 }
 
 fn load_keypair(path: &Path) -> Result<[u8; 32]> {
@@ -78,8 +88,8 @@ fn load_keypair(path: &Path) -> Result<[u8; 32]> {
             path.display()
         )
     })?;
-    let kf: KeyFile = serde_json::from_str(&json)
-        .map_err(|e| anyhow!("keypair file is malformed: {}", e))?;
+    let kf: KeyFile =
+        serde_json::from_str(&json).map_err(|e| anyhow!("keypair file is malformed: {}", e))?;
     parse32(&kf.secret_key)
 }
 
@@ -98,16 +108,24 @@ fn resolve_secret(keypair: Option<&Path>, secret: Option<&str>) -> Result<[u8; 3
 
 fn parse32(s: &str) -> Result<[u8; 32]> {
     let s = s.trim_start_matches("0x");
-    hex::decode(s)?
-        .try_into()
-        .map_err(|_| anyhow!("expected 32-byte hex string, got {} bytes from '{}'", s.len() / 2, s))
+    hex::decode(s)?.try_into().map_err(|_| {
+        anyhow!(
+            "expected 32-byte hex string, got {} bytes from '{}'",
+            s.len() / 2,
+            s
+        )
+    })
 }
 
 fn parse20(s: &str) -> Result<[u8; 20]> {
     let s = s.trim_start_matches("0x");
-    hex::decode(s)?
-        .try_into()
-        .map_err(|_| anyhow!("expected 20-byte hex string, got {} bytes from '{}'", s.len() / 2, s))
+    hex::decode(s)?.try_into().map_err(|_| {
+        anyhow!(
+            "expected 20-byte hex string, got {} bytes from '{}'",
+            s.len() / 2,
+            s
+        )
+    })
 }
 
 // ── hash_type parser ─────────────────────────────────────────────────────────
@@ -116,7 +134,10 @@ fn parse_hash_type(s: &str) -> Result<u8> {
     match s {
         "data" => Ok(0),
         "type" => Ok(1),
-        other => Err(anyhow!("unknown hash_type '{}' — use 'data' or 'type'", other)),
+        other => Err(anyhow!(
+            "unknown hash_type '{}' — use 'data' or 'type'",
+            other
+        )),
     }
 }
 
@@ -125,7 +146,9 @@ fn parse_hash_type(s: &str) -> Result<u8> {
 /// Accepts "100" or "100.5" as CKB, returns shannons (u64).
 /// 1 CKB = 100,000,000 shannons. Minimum 61 CKB (a cell must cover its own storage).
 fn parse_ckb_amount(s: &str) -> Result<u64> {
-    let ckb: f64 = s.parse().map_err(|_| anyhow!("invalid CKB amount '{}' — use a number like 100 or 61.5", s))?;
+    let ckb: f64 = s
+        .parse()
+        .map_err(|_| anyhow!("invalid CKB amount '{}' — use a number like 100 or 61.5", s))?;
     if ckb <= 0.0 {
         return Err(anyhow!("amount must be positive, got {}", s));
     }
@@ -133,7 +156,9 @@ fn parse_ckb_amount(s: &str) -> Result<u64> {
     if shannons < MIN_CELL_CAPACITY {
         return Err(anyhow!(
             "amount too small: {} shannons ({} CKB) — minimum is {} shannons (61 CKB)",
-            shannons, s, MIN_CELL_CAPACITY
+            shannons,
+            s,
+            MIN_CELL_CAPACITY
         ));
     }
     Ok(shannons)
@@ -146,8 +171,8 @@ fn parse_ckb_amount(s: &str) -> Result<u64> {
 fn parse_addr_or_pubkey_hash(s: &str) -> Result<[u8; 20]> {
     if s.starts_with("ckt1") || s.starts_with("ckb1") {
         // Decode bech32m — payload layout: 0x00 | code_hash(32) | hash_type(1) | args(N)
-        let (_, payload) = bech32::decode(s)
-            .map_err(|e| anyhow!("invalid bech32m address '{}': {}", s, e))?;
+        let (_, payload) =
+            bech32::decode(s).map_err(|e| anyhow!("invalid bech32m address '{}': {}", s, e))?;
         if payload.len() < 54 {
             return Err(anyhow!(
                 "address payload too short ({} bytes); expected at least 54 (1 + 32 + 1 + 20)",
@@ -155,7 +180,9 @@ fn parse_addr_or_pubkey_hash(s: &str) -> Result<[u8; 20]> {
             ));
         }
         if payload[0] != 0x00 {
-            return Err(anyhow!("only full-format CKB addresses are supported (payload must start with 0x00)"));
+            return Err(anyhow!(
+                "only full-format CKB addresses are supported (payload must start with 0x00)"
+            ));
         }
         let mut args = [0u8; 20];
         args.copy_from_slice(&payload[34..54]);
@@ -172,10 +199,14 @@ fn parse_addr_or_pubkey_hash(s: &str) -> Result<[u8; 20]> {
 
 fn parse_outpoint_str(s: &str) -> Result<([u8; 32], u32)> {
     let (hash_part, index_part) = s.split_once(':').ok_or_else(|| {
-        anyhow!("invalid outpoint '{}' — expected format: <txhash>:<index>  e.g. 71a7ba8f...:0", s)
+        anyhow!(
+            "invalid outpoint '{}' — expected format: <txhash>:<index>  e.g. 71a7ba8f...:0",
+            s
+        )
     })?;
     let tx_hash = parse32(hash_part)?;
-    let index: u32 = index_part.parse()
+    let index: u32 = index_part
+        .parse()
         .map_err(|_| anyhow!("invalid outpoint index '{}' — must be a number", index_part))?;
     Ok((tx_hash, index))
 }
@@ -411,7 +442,11 @@ fn active_rpc(cfg: &CkbConfig, rpc_override: Option<&str>, devnet_flag: bool) ->
 }
 
 fn active_network(cfg: &CkbConfig, devnet_flag: bool) -> Network {
-    if devnet_flag { Network::Devnet } else { cfg.network }
+    if devnet_flag {
+        Network::Devnet
+    } else {
+        cfg.network
+    }
 }
 
 fn cmd_config(cmd: ConfigCmd) -> Result<()> {
@@ -426,14 +461,21 @@ fn cmd_config(cmd: ConfigCmd) -> Result<()> {
             let network = match args.network.as_str() {
                 "testnet" => Network::Testnet,
                 "mainnet" => Network::Mainnet,
-                "devnet"  => Network::Devnet,
-                other => return Err(anyhow!("unknown network '{}' — use testnet, mainnet, or devnet", other)),
+                "devnet" => Network::Devnet,
+                other => {
+                    return Err(anyhow!(
+                        "unknown network '{}' — use testnet, mainnet, or devnet",
+                        other
+                    ));
+                }
             };
             save_config(&CkbConfig { network })?;
             println!("network set to: {}", network);
             println!("rpc endpoint:   {}", network.rpc_url());
             if network == Network::Devnet {
-                println!("note:           start offckb with `npx offckb node` to run a local CKB devnet");
+                println!(
+                    "note:           start offckb with `npx offckb node` to run a local CKB devnet"
+                );
             }
         }
     }
@@ -493,27 +535,41 @@ fn cmd_account(cmd: AccountCmd, devnet_flag: bool) -> Result<()> {
             println!("address (mainnet):  {}", address_mainnet);
             println!("active network:     {} → {}", net, kf.active_address(net));
             println!();
-            println!("WARNING: keep {} secret — do not commit it to git", out.display());
+            println!(
+                "WARNING: keep {} secret — do not commit it to git",
+                out.display()
+            );
         }
 
         AccountCmd::Show(args) => {
             // If a positional address / pubkey_hash is given, look it up without needing a keypair
             if let Some(ref addr_str) = args.addr {
                 let pubkey_hash = parse_addr_or_pubkey_hash(addr_str)?;
-                let lock = CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: pubkey_hash };
+                let lock = CkbScript {
+                    code_hash: SECP256K1_CODE_HASH,
+                    hash_type: 1,
+                    args: pubkey_hash,
+                };
                 let address_testnet = CkbCell::create_address(lock, Network::Testnet)?;
                 let address_mainnet = CkbCell::create_address(lock, Network::Mainnet)?;
                 println!("pubkey_hash:       0x{}", hex::encode(pubkey_hash));
                 println!("address (testnet): {}", address_testnet);
                 println!("address (mainnet): {}", address_mainnet);
-                println!("note:              use `ckb balance {}` to check the balance", addr_str);
+                println!(
+                    "note:              use `ckb balance {}` to check the balance",
+                    addr_str
+                );
                 return Ok(());
             }
 
             // No positional arg — show the local keypair file
             let path = args.keypair.unwrap_or_else(default_keypair_path);
-            let json = std::fs::read_to_string(&path)
-                .map_err(|_| anyhow!("no keypair at {}\nRun `ckb account new` first", path.display()))?;
+            let json = std::fs::read_to_string(&path).map_err(|_| {
+                anyhow!(
+                    "no keypair at {}\nRun `ckb account new` first",
+                    path.display()
+                )
+            })?;
             let kf: KeyFile = serde_json::from_str(&json)?;
             let cfg = load_config();
             let net = active_network(&cfg, devnet_flag);
@@ -562,11 +618,18 @@ fn cmd_balance(args: BalanceArgs, devnet_flag: bool) -> Result<()> {
     let cells = rpc.get_live_cells(pubkey_hash)?;
     let total: u64 = cells.iter().map(|c| c.capacity).sum();
     println!("cells:       {}", cells.len());
-    println!("balance:     {} CKB  ({} shannons)", total as f64 / 1e8, total);
+    println!(
+        "balance:     {} CKB  ({} shannons)",
+        total as f64 / 1e8,
+        total
+    );
 
     if args.utxos && !cells.is_empty() {
         println!();
-        println!("{:<6}  {:<68}  {:>18}", "#", "outpoint (txhash:index)", "capacity (shannons)");
+        println!(
+            "{:<6}  {:<68}  {:>18}",
+            "#", "outpoint (txhash:index)", "capacity (shannons)"
+        );
         println!("{}", "-".repeat(96));
         for (i, cell) in cells.iter().enumerate() {
             println!(
@@ -607,7 +670,10 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
                 if first_sender_lock_args.is_none() {
                     first_sender_lock_args = Some(lock_args);
                 }
-                inputs.push(CellInput { previous_outpoint: outpoint, since: 0 });
+                inputs.push(CellInput {
+                    previous_outpoint: outpoint,
+                    since: 0,
+                });
             }
 
             let sender_lock_args = first_sender_lock_args.unwrap();
@@ -623,40 +689,57 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
             if total_input_capacity < amount + fee {
                 return Err(anyhow!(
                     "inputs total {} shannons ({:.8} CKB) — not enough to send {} shannons ({:.8} CKB) + fee {} shannons",
-                    total_input_capacity, total_input_capacity as f64 / 1e8,
-                    amount, amount as f64 / 1e8,
+                    total_input_capacity,
+                    total_input_capacity as f64 / 1e8,
+                    amount,
+                    amount as f64 / 1e8,
                     fee,
                 ));
             }
 
             let raw_change = total_input_capacity - amount - fee;
             let (change, actual_fee) = if raw_change > 0 && raw_change < MIN_CELL_CAPACITY {
-                (0u64, total_input_capacity - amount)   // absorb dust into fee
+                (0u64, total_input_capacity - amount) // absorb dust into fee
             } else {
                 (raw_change, fee)
             };
 
             let mut outputs = vec![CellOutput {
                 capacity: amount,
-                lock_script: CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: to_pubkey_hash },
+                lock_script: CkbScript {
+                    code_hash: SECP256K1_CODE_HASH,
+                    hash_type: 1,
+                    args: to_pubkey_hash,
+                },
                 type_script: None,
             }];
             if change > 0 {
                 outputs.push(CellOutput {
                     capacity: change,
-                    lock_script: CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: change_lock_args },
+                    lock_script: CkbScript {
+                        code_hash: SECP256K1_CODE_HASH,
+                        hash_type: 1,
+                        args: change_lock_args,
+                    },
                     type_script: None,
                 });
             }
 
             let witnesses: Vec<WitnessArgs> = (0..inputs.len())
-                .map(|_| WitnessArgs { lock: None, input_type: None, output_type: None })
+                .map(|_| WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                })
                 .collect();
 
             let tx = CKBTransaction {
                 version: 0,
                 cell_deps: vec![CellDep {
-                    outpoint: OutPoint { tx_hash: net.secp256k1_dep_tx_hash(), index: SECP256K1_DEP_INDEX },
+                    outpoint: OutPoint {
+                        tx_hash: net.secp256k1_dep_tx_hash(),
+                        index: SECP256K1_DEP_INDEX,
+                    },
                     dep_type: SECP256K1_DEP_TYPE,
                 }],
                 header_deps: [0u8; 32],
@@ -667,14 +750,39 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
             };
 
             std::fs::write(&args.out, serde_json::to_string_pretty(&tx)?)?;
-            let change_dest = if args.change_to.is_some() { "→ change-to address" } else { "→ back to sender" };
+            let change_dest = if args.change_to.is_some() {
+                "→ change-to address"
+            } else {
+                "→ back to sender"
+            };
             println!("tx hash:  0x{}", hex::encode(tx.rpc_raw_tx_hash()));
-            println!("inputs:   {} cell(s), {} shannons total ({:.8} CKB)", tx.inputs.len(), total_input_capacity, total_input_capacity as f64 / 1e8);
-            println!("send:     {} shannons ({:.8} CKB)", amount, amount as f64 / 1e8);
-            println!("change:   {} shannons ({:.8} CKB) {}", change, change as f64 / 1e8, change_dest);
-            println!("fee:      {} shannons ({:.8} CKB)", actual_fee, actual_fee as f64 / 1e8);
+            println!(
+                "inputs:   {} cell(s), {} shannons total ({:.8} CKB)",
+                tx.inputs.len(),
+                total_input_capacity,
+                total_input_capacity as f64 / 1e8
+            );
+            println!(
+                "send:     {} shannons ({:.8} CKB)",
+                amount,
+                amount as f64 / 1e8
+            );
+            println!(
+                "change:   {} shannons ({:.8} CKB) {}",
+                change,
+                change as f64 / 1e8,
+                change_dest
+            );
+            println!(
+                "fee:      {} shannons ({:.8} CKB)",
+                actual_fee,
+                actual_fee as f64 / 1e8
+            );
             println!("written:  {}", args.out.display());
-            println!("sign:     ckb tx sign --tx {} --keypair ~/.config/ckb/key.json", args.out.display());
+            println!(
+                "sign:     ckb tx sign --tx {} --keypair ~/.config/ckb/key.json",
+                args.out.display()
+            );
         }
 
         TxCmd::Sign(args) => {
@@ -721,11 +829,18 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
 
             println!("network:  {}", net);
             println!("tx hash:  0x{}", hex::encode(tx_hash));
-            println!("explorer: {}/transaction/0x{}", net.explorer_base(), hex::encode(tx_hash));
+            println!(
+                "explorer: {}/transaction/0x{}",
+                net.explorer_base(),
+                hex::encode(tx_hash)
+            );
 
             if tx_hash != tx_hash_local {
-                eprintln!("warning: node returned hash 0x{} but local hash was 0x{}",
-                    hex::encode(tx_hash), hex::encode(tx_hash_local));
+                eprintln!(
+                    "warning: node returned hash 0x{} but local hash was 0x{}",
+                    hex::encode(tx_hash),
+                    hex::encode(tx_hash_local)
+                );
             }
         }
 
@@ -749,26 +864,48 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
 
             let cells = rpc.get_live_cells(account.pubkey_hash)?;
             if cells.is_empty() {
-                return Err(anyhow!("no live cells found for this account on {}", rpc_url));
+                return Err(anyhow!(
+                    "no live cells found for this account on {}",
+                    rpc_url
+                ));
             }
 
             // Use a pessimistic fee estimate (3 inputs, 2 outputs) for initial coin selection,
             // then recompute with the actual input count.
-            let fee_for_selection = if args.fee > 0 { args.fee } else { estimate_fee(3, 2) };
+            let fee_for_selection = if args.fee > 0 {
+                args.fee
+            } else {
+                estimate_fee(3, 2)
+            };
             let (selected_indices, _) = select_cells(&cells, amount, fee_for_selection)?;
 
             let n_inputs = selected_indices.len();
             let total_in: u64 = selected_indices.iter().map(|&i| cells[i].capacity).sum();
-            let actual_fee = if args.fee > 0 { args.fee } else { estimate_fee(n_inputs, 2) };
+            let actual_fee = if args.fee > 0 {
+                args.fee
+            } else {
+                estimate_fee(n_inputs, 2)
+            };
 
-            let inputs: Vec<CellInput> = selected_indices.iter().map(|&i| CellInput {
-                previous_outpoint: cells[i].out_point,
-                since: 0,
-            }).collect();
+            let inputs: Vec<CellInput> = selected_indices
+                .iter()
+                .map(|&i| CellInput {
+                    previous_outpoint: cells[i].out_point,
+                    since: 0,
+                })
+                .collect();
 
             let raw_change = total_in.saturating_sub(amount).saturating_sub(actual_fee);
-            let change = if raw_change > 0 && raw_change < MIN_CELL_CAPACITY { 0 } else { raw_change };
-            let actual_fee = if change == 0 { total_in - amount } else { actual_fee };
+            let change = if raw_change > 0 && raw_change < MIN_CELL_CAPACITY {
+                0
+            } else {
+                raw_change
+            };
+            let actual_fee = if change == 0 {
+                total_in - amount
+            } else {
+                actual_fee
+            };
 
             let sender_lock = CkbScript {
                 code_hash: SECP256K1_CODE_HASH,
@@ -796,11 +933,18 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
 
             let n_inputs = inputs.len();
             let empty_witnesses: Vec<WitnessArgs> = (0..n_inputs)
-                .map(|_| WitnessArgs { lock: None, input_type: None, output_type: None })
+                .map(|_| WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                })
                 .collect();
 
             let cell_deps = vec![CellDep {
-                outpoint: OutPoint { tx_hash: net.secp256k1_dep_tx_hash(), index: SECP256K1_DEP_INDEX },
+                outpoint: OutPoint {
+                    tx_hash: net.secp256k1_dep_tx_hash(),
+                    index: SECP256K1_DEP_INDEX,
+                },
                 dep_type: SECP256K1_DEP_TYPE,
             }];
 
@@ -821,13 +965,30 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
             let tx_hash = rpc.send_transaction(tx_json)?;
 
             println!("network:  {}", net);
-            println!("sent:     {:.8} CKB ({} shannons) to 0x{}", amount as f64 / 1e8, amount, hex::encode(to_pubkey_hash));
+            println!(
+                "sent:     {:.8} CKB ({} shannons) to 0x{}",
+                amount as f64 / 1e8,
+                amount,
+                hex::encode(to_pubkey_hash)
+            );
             if change > 0 {
-                println!("change:   {:.8} CKB ({} shannons) back to self", change as f64 / 1e8, change);
+                println!(
+                    "change:   {:.8} CKB ({} shannons) back to self",
+                    change as f64 / 1e8,
+                    change
+                );
             }
-            println!("fee:      {} shannons ({:.8} CKB)", actual_fee, actual_fee as f64 / 1e8);
+            println!(
+                "fee:      {} shannons ({:.8} CKB)",
+                actual_fee,
+                actual_fee as f64 / 1e8
+            );
             println!("tx hash:  0x{}", hex::encode(tx_hash));
-            println!("explorer: {}/transaction/0x{}", net.explorer_base(), hex::encode(tx_hash));
+            println!(
+                "explorer: {}/transaction/0x{}",
+                net.explorer_base(),
+                hex::encode(tx_hash)
+            );
         }
     }
     Ok(())

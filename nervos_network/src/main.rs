@@ -1,7 +1,7 @@
-mod schemas;
-mod network;
-mod data;
 mod cli;
+mod data;
+mod network;
+mod schemas;
 
 use clap::Parser;
 

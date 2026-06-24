@@ -6,12 +6,12 @@
 
 // ── Field extractors (common to all formats) ────────────────────────────────
 
-pub fn get_opcode(bit: u32) -> u32{
+pub fn get_opcode(bit: u32) -> u32 {
     bit & 0b1111111
 }
 
 /// accepts 32 bits 0x00A58533 and isolates bits 7–11 to extract the destination register (rd).
-pub fn get_rd(bit: u32) -> u32{
+pub fn get_rd(bit: u32) -> u32 {
     // reg_dest = (ix >> 7) & b11111
     // shift by 7 bits
     let shift = bit >> 7;
@@ -20,17 +20,17 @@ pub fn get_rd(bit: u32) -> u32{
     return rd;
 }
 
-pub fn get_funct3(bit: u32) -> u32{
+pub fn get_funct3(bit: u32) -> u32 {
     (bit >> 12) & 0b111
 }
 
-pub fn get_rs1(bit: u32) -> u32{
+pub fn get_rs1(bit: u32) -> u32 {
     (bit >> 15) & 0b11111
 }
-pub fn get_rs2(bit: u32) -> u32{
+pub fn get_rs2(bit: u32) -> u32 {
     (bit >> 20) & 0b11111
 }
-pub fn get_funct7(bit: u32) -> u32{
+pub fn get_funct7(bit: u32) -> u32 {
     (bit >> 25) & 0b1111111
 }
 
@@ -61,7 +61,7 @@ pub fn get_imm_i(raw: u32) -> i64 {
 
 /// S-type: inst[31:25] → imm[11:5], inst[11:7] → imm[4:0]
 pub fn get_imm_s(raw: u32) -> i64 {
-    let imm_4_0  = (raw >> 7)  & 0b11111;
+    let imm_4_0 = (raw >> 7) & 0b11111;
     let imm_11_5 = (raw >> 25) & 0b1111111;
     let imm = (imm_11_5 << 5) | imm_4_0;
     // for s-type, inst[31] is imm[11] which is the 12th value
@@ -72,10 +72,10 @@ pub fn get_imm_s(raw: u32) -> i64 {
 /// are multiples of 2). inst[31]→imm[12], inst[7]→imm[11],
 /// inst[30:25]→imm[10:5], inst[11:8]→imm[4:1].
 pub fn get_imm_b(raw: u32) -> i64 {
-    let imm_4_1  = (raw >> 8)  & 0b1111;
+    let imm_4_1 = (raw >> 8) & 0b1111;
     let imm_10_5 = (raw >> 25) & 0b111111;
-    let imm_11   = (raw >> 7)  & 0b1;
-    let imm_12   = (raw >> 31) & 0b1;
+    let imm_11 = (raw >> 7) & 0b1;
+    let imm_12 = (raw >> 31) & 0b1;
     let imm = (imm_12 << 12) | (imm_11 << 11) | (imm_10_5 << 5) | (imm_4_1 << 1);
     // inst[31] is imm[12] which is the 13th value
     sign_extend(imm as u64, 13)
@@ -93,10 +93,10 @@ pub fn get_imm_u(raw: u32) -> i64 {
 /// multiples of 2). inst[31]→imm[20], inst[19:12]→imm[19:12],
 /// inst[20]→imm[11], inst[30:21]→imm[10:1].
 pub fn get_imm_j(raw: u32) -> i64 {
-    let imm_10_1  = (raw >> 21) & 0b1111111111;
-    let imm_11    = (raw >> 20) & 0b1;
+    let imm_10_1 = (raw >> 21) & 0b1111111111;
+    let imm_11 = (raw >> 20) & 0b1;
     let imm_19_12 = (raw >> 12) & 0b11111111;
-    let imm_20    = (raw >> 31) & 0b1;
+    let imm_20 = (raw >> 31) & 0b1;
     let imm = (imm_20 << 20) | (imm_19_12 << 12) | (imm_11 << 11) | (imm_10_1 << 1);
     // inst[31] is imm[20] which is the 21st value
     sign_extend(imm as u64, 21)
@@ -105,16 +105,16 @@ pub fn get_imm_j(raw: u32) -> i64 {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_decoding(){
+fn test_decoding() {
     let a = 0x00A58533; // 0b 00000000(fucnt7 = 0) 01010(rs2 = 10) 01011(rs1 = 11) 000(sub op selector = FUNCT 3 0/ADD) 01010(DEST REG = 10)  0110011(IX type)
 
     assert!(get_rd(a) == 0b01010);
-    assert_eq!(get_opcode(a),  0b0110011); // 51, R-type
-    assert_eq!(get_rd(a),      0b01010);   // 10
-    assert_eq!(get_funct3(a),  0b000);     // ADD
-    assert_eq!(get_rs1(a),     0b01011);   // 11
-    assert_eq!(get_rs2(a),     0b01010);   // 10
-    assert_eq!(get_funct7(a),  0b0000000); // 0
+    assert_eq!(get_opcode(a), 0b0110011); // 51, R-type
+    assert_eq!(get_rd(a), 0b01010); // 10
+    assert_eq!(get_funct3(a), 0b000); // ADD
+    assert_eq!(get_rs1(a), 0b01011); // 11
+    assert_eq!(get_rs2(a), 0b01010); // 10
+    assert_eq!(get_funct7(a), 0b0000000); // 0
 }
 
 #[test]

@@ -1,6 +1,6 @@
-mod instructions;
 mod data_type;
-use data_type::ckbvm::{CkbVm};
+mod instructions;
+use data_type::ckbvm::CkbVm;
 
 fn main() {
     println!("Hello, world!");
@@ -15,5 +15,4 @@ fn main() {
     // let lrhs = a >> 31;
     // let arhs = (a << 31) >> 31;
     // println!("lrhs: {:#034b} \n arhs {:#034b}", lrhs, arhs);
-    
 }

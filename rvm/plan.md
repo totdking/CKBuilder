@@ -2,14 +2,14 @@
 
 ## Phase 0: Environment Setup and Bitwise Kata
 **Objective:** Establish the toolchain and master the binary arithmetic required to parse CPU instructions.
-- [ ] **Install Toolchains:** Install Rust and the `ckb-riscv-gnu-toolchain` (specifically `riscv64-unknown-elf-gcc` to compile your test contracts).
-- [ ] **Bitwise Isolation:** Write standalone Rust functions to practice masking (`&`) and shifting (`<<`, `>>`).
+- [x] **Install Toolchains:** Install Rust and the `ckb-riscv-gnu-toolchain` (specifically `riscv64-unknown-elf-gcc` to compile your test contracts).
+- [x] **Bitwise Isolation:** Write standalone Rust functions to practice masking (`&`) and shifting (`<<`, `>>`).
   - *Test:* Write a function that accepts the 32-bit integer `0x00A58533` (an `add` instruction) and isolates bits 7 through 11 to extract the destination register.
-- [ ] **Documentation:** Download the *RISC-V Instruction Set Manual (Volume I)*. Bookmark the opcode maps.
+- [x] **Documentation:** Download the *RISC-V Instruction Set Manual (Volume I)*. Bookmark the opcode maps.
 
 ## Phase 1: The Bare-Metal Loop (The MVP)
 **Objective:** Construct a finite state machine that mutates an array based on hardcoded byte instructions.
-- [ ] **State Modelling:** Define the core `CkbVm` struct.
+- [x] **State Modelling:** Define the core `CkbVm` struct.
   - `registers: [u64; 32]` (Note: enforce `registers[0]` as hardwired to 0).
   - `pc: u64` (Program Counter).
   - `memory: Vec<u8>`.
@@ -18,7 +18,7 @@
   - `ADDI` (Add Immediate): Decode opcode, extract the immediate, add to `rs1`, store in `rd`.
   - `JAL` (Jump and Link): Decode offset, mutate `pc`.
   - `ECALL` (Environment Call): Print register state and `break` the loop.
-- [ ] **Verification:** Hardcode a byte array representing `JAL`, `ADDI`, `ECALL`. Run the loop and verify the array mutation.
+- [x] **Verification:** Hardcode a byte array representing `JAL`, `ADDI`, `ECALL`. Run the loop and verify the array mutation.
 
 ## Phase 2: Complete the RV64I Baseline
 **Objective:** Map the standard 64-bit integer instruction set required for basic C logic.

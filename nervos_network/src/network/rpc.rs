@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use hex_literal::hex;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 use std::time::Duration;
 
@@ -56,7 +56,7 @@ pub fn estimate_fee(n_inputs: usize, n_outputs: usize) -> u64 {
         + n_inputs * 48
         + n_outputs * 97
         + 93                                            // first witness
-        + n_inputs.saturating_sub(1) * 16;             // additional empty witnesses
+        + n_inputs.saturating_sub(1) * 16; // additional empty witnesses
     let fee = (size as u64 * FEE_RATE_SHANNONS_PER_KB + 1_023) / 1_024;
     fee.clamp(DEFAULT_FEE, MAX_FEE)
 }
@@ -145,14 +145,19 @@ impl CkbRpcClient {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
-        Self { url: url.to_string(), client }
+        Self {
+            url: url.to_string(),
+            client,
+        }
     }
 
     /// Verifies the node is reachable and returns the current tip block number.
     #[allow(dead_code)]
     pub fn get_tip_block_number(&self) -> Result<u64> {
         let result = self.rpc("get_tip_block_number", json!([]))?;
-        let hex_str = result.as_str().ok_or_else(|| anyhow!("expected hex string"))?;
+        let hex_str = result
+            .as_str()
+            .ok_or_else(|| anyhow!("expected hex string"))?;
         let n = u64::from_str_radix(hex_str.trim_start_matches("0x"), 16)?;
         Ok(n)
     }
@@ -171,7 +176,9 @@ impl CkbRpcClient {
         if status != "live" {
             return Err(anyhow!(
                 "cell {}:{} is not live (status: {})",
-                hex::encode(out_point.tx_hash), out_point.index, status
+                hex::encode(out_point.tx_hash),
+                out_point.index,
+                status
             ));
         }
 
@@ -187,9 +194,9 @@ impl CkbRpcClient {
             .ok_or_else(|| anyhow!("missing lock args in cell response"))?
             .trim_start_matches("0x");
         let args_bytes = hex::decode(args_hex)?;
-        let lock_args: [u8; 20] = args_bytes
-            .try_into()
-            .map_err(|_| anyhow!("lock args are not 20 bytes — only secp256k1/blake160 cells are supported"))?;
+        let lock_args: [u8; 20] = args_bytes.try_into().map_err(|_| {
+            anyhow!("lock args are not 20 bytes — only secp256k1/blake160 cells are supported")
+        })?;
 
         Ok((capacity, lock_args))
     }
@@ -225,8 +232,7 @@ impl CkbRpcClient {
                 let cap_hex = obj["output"]["capacity"]
                     .as_str()
                     .ok_or_else(|| anyhow!("missing capacity"))?;
-                let capacity =
-                    u64::from_str_radix(cap_hex.trim_start_matches("0x"), 16)?;
+                let capacity = u64::from_str_radix(cap_hex.trim_start_matches("0x"), 16)?;
 
                 let tx_hash_hex = obj["out_point"]["tx_hash"]
                     .as_str()
@@ -239,8 +245,7 @@ impl CkbRpcClient {
                 let index_hex = obj["out_point"]["index"]
                     .as_str()
                     .ok_or_else(|| anyhow!("missing index"))?;
-                let index =
-                    u32::from_str_radix(index_hex.trim_start_matches("0x"), 16)?;
+                let index = u32::from_str_radix(index_hex.trim_start_matches("0x"), 16)?;
 
                 cells.push(LiveCell {
                     out_point: OutPoint { tx_hash, index },
@@ -309,7 +314,9 @@ impl CkbRpcClient {
 /// If change would be below `MIN_CELL_CAPACITY`, it is absorbed into the fee instead.
 /// Errors if the total balance is insufficient.
 pub fn select_cells(cells: &[LiveCell], amount: u64, fee: u64) -> Result<(Vec<usize>, u64)> {
-    let need = amount.checked_add(fee).ok_or_else(|| anyhow!("amount + fee overflow"))?;
+    let need = amount
+        .checked_add(fee)
+        .ok_or_else(|| anyhow!("amount + fee overflow"))?;
     let total: u64 = cells.iter().map(|c| c.capacity).sum();
     if total < need {
         return Err(anyhow!(
@@ -352,7 +359,10 @@ mod tests {
         capacities
             .iter()
             .map(|&c| LiveCell {
-                out_point: OutPoint { tx_hash: [0u8; 32], index: 0 },
+                out_point: OutPoint {
+                    tx_hash: [0u8; 32],
+                    index: 0,
+                },
                 capacity: c,
             })
             .collect()
@@ -370,8 +380,7 @@ mod tests {
     fn select_with_change() {
         // 200 CKB available, send 100, fee 1000 → change = 100 CKB - 1000 shannons
         let cs = cells(&[20_000_000_000]);
-        let (indices, change) =
-            select_cells(&cs, 10_000_000_000, DEFAULT_FEE).unwrap();
+        let (indices, change) = select_cells(&cs, 10_000_000_000, DEFAULT_FEE).unwrap();
         assert_eq!(indices, vec![0]);
         assert_eq!(change, 20_000_000_000 - 10_000_000_000 - DEFAULT_FEE);
     }
@@ -380,8 +389,7 @@ mod tests {
     fn select_multiple_cells() {
         // Needs two cells to cover the amount
         let cs = cells(&[6_100_000_000, 6_100_000_000]);
-        let (indices, change) =
-            select_cells(&cs, 10_000_000_000, DEFAULT_FEE).unwrap();
+        let (indices, change) = select_cells(&cs, 10_000_000_000, DEFAULT_FEE).unwrap();
         assert_eq!(indices.len(), 2);
         let total: u64 = indices.iter().map(|&i| cs[i].capacity).sum();
         assert!(total >= 10_000_000_000 + DEFAULT_FEE);

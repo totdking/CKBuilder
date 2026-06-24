@@ -1,18 +1,20 @@
+use anyhow::{Ok, Result, anyhow};
 use blake2b_rs::Blake2bBuilder;
-use molecule::{prelude::*,};
-use anyhow::{anyhow, Ok, Result};
-use secp256k1::{self, Message, Secp256k1, SecretKey, ecdsa::{RecoverableSignature, RecoveryId}};
+use molecule::prelude::*;
+use secp256k1::{
+    self, Message, Secp256k1, SecretKey,
+    ecdsa::{RecoverableSignature, RecoveryId},
+};
 use serde_json;
 
-use crate::schemas::{*, Byte32, Uint32, Bytes, OutPoint as MolOutpoint, 
-    CellInput as MolCellInput, CellOutput as MolCellOutput, ScriptOpt, RawTransactionBuilder, 
-    TransactionBuilder, CellInputVec, CellOutputVec, BytesVec, CellDep as MolCellDep,
-    WitnessArgs as MolWitnessArgs, BytesOpt, CellDepVec
-};
-use serde::{Serialize, Deserialize};
 use crate::data::{Account, CkbCell, CkbScript};
-
-
+use crate::schemas::{
+    Byte32, Bytes, BytesOpt, BytesVec, CellDep as MolCellDep, CellDepVec,
+    CellInput as MolCellInput, CellInputVec, CellOutput as MolCellOutput, CellOutputVec,
+    OutPoint as MolOutpoint, RawTransactionBuilder, ScriptOpt, TransactionBuilder, Uint32,
+    WitnessArgs as MolWitnessArgs, *,
+};
+use serde::{Deserialize, Serialize};
 
 /// Transaction structure of ckb
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,14 +22,13 @@ pub struct CKBTransaction {
     pub version: u32,
     pub cell_deps: Vec<CellDep>,
     #[serde(with = "crate::cli::hex_serde::array32")]
-    pub header_deps: [u8;32],
+    pub header_deps: [u8; 32],
     pub inputs: Vec<CellInput>,
     pub witnesses: Vec<WitnessArgs>,
     pub outputs: Vec<CellOutput>,
     #[serde(with = "crate::cli::hex_serde::vec_bytes")]
     pub output_data: Vec<u8>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WitnessArgs {
@@ -62,111 +63,121 @@ pub struct CellOutput {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct OutPoint {
     #[serde(with = "crate::cli::hex_serde::array32")]
-    pub tx_hash: [u8;32],
+    pub tx_hash: [u8; 32],
     pub index: u32,
 }
 
 #[allow(dead_code)]
-pub enum TxState{
+pub enum TxState {
     Pending,
     Confirmed,
     Confirming,
     Conflicting,
     Conflictive,
     Reverted,
-    Abandoned
+    Abandoned,
 }
 
 #[allow(dead_code)]
-impl CKBTransaction{
-
+impl CKBTransaction {
     /// Helper function to return transaction builder
-    pub fn transaction_builder(&self) -> TransactionBuilder{
+    pub fn transaction_builder(&self) -> TransactionBuilder {
         TransactionBuilder::default()
-        .raw(
-            RawTransactionBuilder::default()
-            .version(Uint32::from_slice(&self.version.to_le_bytes()).unwrap())
-            .cell_deps(
-                CellDepVec::new_builder().extend(self.cell_deps.iter().map(|i| i.pack())).build()
+            .raw(
+                RawTransactionBuilder::default()
+                    .version(Uint32::from_slice(&self.version.to_le_bytes()).unwrap())
+                    .cell_deps(
+                        CellDepVec::new_builder()
+                            .extend(self.cell_deps.iter().map(|i| i.pack()))
+                            .build(),
+                    )
+                    .header_deps(Byte32::from_slice(&self.header_deps).unwrap())
+                    .inputs(
+                        CellInputVec::new_builder()
+                            .extend(self.inputs.iter().map(|i| i.pack()))
+                            .build(),
+                    )
+                    .outputs(
+                        CellOutputVec::new_builder()
+                            .extend(self.outputs.iter().map(|i| i.pack()))
+                            .build(),
+                    )
+                    .outputs_data(
+                        BytesVec::new_builder()
+                            .push(Bytes::from(self.output_data.clone()))
+                            .build(),
+                    )
+                    .build(),
             )
-            .header_deps(
-                Byte32::from_slice(&self.header_deps).unwrap()
-            )
-            .inputs(
-                CellInputVec::new_builder()
-                .extend(self.inputs.iter().map(|i| i.pack()))
-                .build()
-            )
-            .outputs(
-                CellOutputVec::new_builder()
-                .extend(self.outputs.iter().map(|i| i.pack()))
-                .build()
-            )
-            .outputs_data(
+            .witnesses(
                 BytesVec::new_builder()
-                .push(Bytes::from(self.output_data.clone()))
-                .build()
-            ).build()
-        )
-        .witnesses(
-            BytesVec::new_builder().extend(self.witnesses.iter().map(|w| Bytes::from(w.pack().as_slice().to_vec())) ).build()
-        )
+                    .extend(
+                        self.witnesses
+                            .iter()
+                            .map(|w| Bytes::from(w.pack().as_slice().to_vec())),
+                    )
+                    .build(),
+            )
     }
 
     /// Personalized blake2b hash of serialized tx proof excluding witness
-    /// 
+    ///
     /// Creates raw tx_hash excluding witnesses
-    pub fn hash(&self) -> [u8;32] {
+    pub fn hash(&self) -> [u8; 32] {
         // serialize tx body excluding witness as it will be used in the sighash creation
         // Build a mol_tx using the raw generated .mol file from the schema
         let raw_tx = RawTransactionBuilder::default()
-        .version(Uint32::from_slice(&self.version.to_le_bytes()).unwrap())
-        .cell_deps(
-            CellDepVec::new_builder().extend(self.cell_deps.iter().map(|i| i.pack())).build()
-        )
-        .header_deps(
-            Byte32::from_slice(&self.header_deps).unwrap()
-        )
-        .inputs(
-            CellInputVec::new_builder()
-            .extend(self.inputs.iter().map(|i| i.pack()))
-            .build()
-        )
-        .outputs(
-            CellOutputVec::new_builder()
-            .extend(self.outputs.iter().map(|i| i.pack()))
-            .build()
-        )
-        .outputs_data(
-            BytesVec::new_builder()
-            .push(Bytes::from(self.output_data.clone()))
-            .build()
-        )
-        .build();
+            .version(Uint32::from_slice(&self.version.to_le_bytes()).unwrap())
+            .cell_deps(
+                CellDepVec::new_builder()
+                    .extend(self.cell_deps.iter().map(|i| i.pack()))
+                    .build(),
+            )
+            .header_deps(Byte32::from_slice(&self.header_deps).unwrap())
+            .inputs(
+                CellInputVec::new_builder()
+                    .extend(self.inputs.iter().map(|i| i.pack()))
+                    .build(),
+            )
+            .outputs(
+                CellOutputVec::new_builder()
+                    .extend(self.outputs.iter().map(|i| i.pack()))
+                    .build(),
+            )
+            .outputs_data(
+                BytesVec::new_builder()
+                    .push(Bytes::from(self.output_data.clone()))
+                    .build(),
+            )
+            .build();
 
         // Blake2b personal hashing
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
-        let mut hash = [0u8;32];
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
+        let mut hash = [0u8; 32];
         hasher.update(raw_tx.as_slice());
         hasher.finalize(&mut hash);
         return hash;
     }
 
     /// creates the message from hashing the raw_tx_hash || witnesses to pass to create-transaction
-    pub fn create_sighash(&self) -> [u8;32]{
+    pub fn create_sighash(&self) -> [u8; 32] {
         let witnesses = &self.witnesses;
         // display the raw tx hash from self.hash
         let raw_tx_hash = self.hash();
 
         // start the hasher with the raw_tx_hash
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         hasher.update(&raw_tx_hash);
 
         // iterate through the witnesses
         for (i, witness) in witnesses.iter().enumerate() {
             let witness_bytes = if i == 0 {
                 let mut signed_witness = witness.clone();
-                signed_witness.lock = Some(vec![0u8;65]);
+                signed_witness.lock = Some(vec![0u8; 65]);
                 signed_witness.pack().as_bytes()
             } else {
                 witness.pack().as_bytes()
@@ -177,13 +188,13 @@ impl CKBTransaction{
         }
 
         // finalize the hasher to the sig-hash
-        let mut sig_hash = [0u8;32];
+        let mut sig_hash = [0u8; 32];
         hasher.finalize(&mut sig_hash);
         return sig_hash;
     }
 
     /// private_key.sign_recoverable.(sig_hash) this signs the message created by the sig_hash()
-    pub fn create_signature(&self, private_key: SecretKey) -> [u8;65] {
+    pub fn create_signature(&self, private_key: SecretKey) -> [u8; 65] {
         let sig_hash = self.create_sighash();
 
         // Create a secp256k1 context
@@ -192,15 +203,15 @@ impl CKBTransaction{
         // wrap the sig-hash in a message wrapper
         let msg = Message::from_digest(sig_hash);
 
-        // The 65 bytes break down as:                                                                                                   
-        //   [  r (32 bytes)  |  s (32 bytes)  |  v (1 byte)  ]                                                                            
-        //        64 bytes of secp256k1 signature      recovery id                                                                                                                                                                                                      
-        //   - r and s are the two 32-byte components of a standard secp256k1 ECDSA signature                                              
-        //   - v (1 byte) is the recovery id — it lets a verifier reconstruct your public key from the signature alone, without you having 
-        //   to include it explicitly. This is what makes it a recoverable signature.  
+        // The 65 bytes break down as:
+        //   [  r (32 bytes)  |  s (32 bytes)  |  v (1 byte)  ]
+        //        64 bytes of secp256k1 signature      recovery id
+        //   - r and s are the two 32-byte components of a standard secp256k1 ECDSA signature
+        //   - v (1 byte) is the recovery id — it lets a verifier reconstruct your public key from the signature alone, without you having
+        //   to include it explicitly. This is what makes it a recoverable signature.
         let sig = secp.sign_ecdsa_recoverable(msg, &private_key);
         let (recovery_id, sig_bytes) = sig.serialize_compact();
-        let mut signature = [0u8;65];
+        let mut signature = [0u8; 65];
         signature[0..64].copy_from_slice(&sig_bytes);
         signature[64] = recovery_id as u8;
         return signature;
@@ -209,7 +220,7 @@ impl CKBTransaction{
     pub fn sign(&mut self, account: &Account, input_cells: &[CkbCell]) -> Result<Transaction> {
         for cell in input_cells {
             if !cell.can_unlock_script(account) {
-                return Err(anyhow!("account does not own any one of the input cells"))
+                return Err(anyhow!("account does not own any one of the input cells"));
             }
         }
         let private_key = SecretKey::from_byte_array(account.private_key)?;
@@ -218,10 +229,10 @@ impl CKBTransaction{
         // embed the real signature into the witness[0].lock
         self.witnesses[0].lock = Some(signature.to_vec());
 
-        // Return the Transaction 
+        // Return the Transaction
         Ok(self.transaction_builder().build())
     }
-    
+
     /// Validates a spend: structural checks + cryptographic signature recovery.
     ///
     /// Checks in order:
@@ -233,18 +244,28 @@ impl CKBTransaction{
     pub fn validate_spend(&self, input_index: usize, cells: &[CkbCell]) -> Result<()> {
         let since = self.inputs[input_index].since;
         if since != 0 {
-            return Err(anyhow!("input {} has a since lock ({})", input_index, since));
+            return Err(anyhow!(
+                "input {} has a since lock ({})",
+                input_index,
+                since
+            ));
         }
 
         if input_index >= self.witnesses.len() {
             return Err(anyhow!("no witness slot for input {}", input_index));
         }
 
-        let sig_bytes = self.witnesses[input_index].lock.as_ref()
+        let sig_bytes = self.witnesses[input_index]
+            .lock
+            .as_ref()
             .ok_or_else(|| anyhow!("witnesses[{}].lock is empty — tx is unsigned", input_index))?;
 
         if sig_bytes.len() != 65 {
-            return Err(anyhow!("witnesses[{}].lock is {} bytes, expected 65", input_index, sig_bytes.len()));
+            return Err(anyhow!(
+                "witnesses[{}].lock is {} bytes, expected 65",
+                input_index,
+                sig_bytes.len()
+            ));
         }
 
         if input_index >= cells.len() {
@@ -256,11 +277,14 @@ impl CKBTransaction{
             .map_err(|e| anyhow!("malformed signature: {}", e))?;
         let msg = Message::from_digest(self.create_sighash());
         let secp = Secp256k1::new();
-        let recovered_pubkey = secp.recover_ecdsa(msg, &rec_sig)
+        let recovered_pubkey = secp
+            .recover_ecdsa(msg, &rec_sig)
             .map_err(|e| anyhow!("signature recovery failed: {}", e))?;
 
         let ser_pubkey = recovered_pubkey.serialize();
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         hasher.update(&ser_pubkey);
         let mut full_hash = [0u8; 32];
         hasher.finalize(&mut full_hash);
@@ -333,7 +357,9 @@ impl CKBTransaction{
             raw_tx.extend_from_slice(f);
         }
 
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         let mut hash = [0u8; 32];
         hasher.update(&raw_tx);
         hasher.finalize(&mut hash);
@@ -343,7 +369,9 @@ impl CKBTransaction{
     /// CKB sighash_all using the real-network-compatible raw tx hash.
     pub fn create_rpc_sighash(&self) -> [u8; 32] {
         let raw_tx_hash = self.rpc_raw_tx_hash();
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         hasher.update(&raw_tx_hash);
 
         for (i, witness) in self.witnesses.iter().enumerate() {
@@ -387,48 +415,64 @@ impl CKBTransaction{
             _ => "type",
         };
 
-        let script_json = |s: &CkbScript| serde_json::json!({
-            "code_hash": format!("0x{}", hex::encode(s.code_hash)),
-            "hash_type": hash_type_str(s.hash_type),
-            "args": format!("0x{}", hex::encode(s.args)),
-        });
-
-        let cell_deps: Vec<serde_json::Value> = self.cell_deps.iter().map(|dep| {
+        let script_json = |s: &CkbScript| {
             serde_json::json!({
-                "out_point": {
-                    "tx_hash": format!("0x{}", hex::encode(dep.outpoint.tx_hash)),
-                    "index": format!("0x{:x}", dep.outpoint.index),
-                },
-                "dep_type": if dep.dep_type == 1 { "dep_group" } else { "code" },
+                "code_hash": format!("0x{}", hex::encode(s.code_hash)),
+                "hash_type": hash_type_str(s.hash_type),
+                "args": format!("0x{}", hex::encode(s.args)),
             })
-        }).collect();
+        };
 
-        let inputs: Vec<serde_json::Value> = self.inputs.iter().map(|inp| {
-            serde_json::json!({
-                "previous_output": {
-                    "tx_hash": format!("0x{}", hex::encode(inp.previous_outpoint.tx_hash)),
-                    "index": format!("0x{:x}", inp.previous_outpoint.index),
-                },
-                "since": format!("0x{:x}", inp.since),
+        let cell_deps: Vec<serde_json::Value> = self
+            .cell_deps
+            .iter()
+            .map(|dep| {
+                serde_json::json!({
+                    "out_point": {
+                        "tx_hash": format!("0x{}", hex::encode(dep.outpoint.tx_hash)),
+                        "index": format!("0x{:x}", dep.outpoint.index),
+                    },
+                    "dep_type": if dep.dep_type == 1 { "dep_group" } else { "code" },
+                })
             })
-        }).collect();
+            .collect();
 
-        let outputs: Vec<serde_json::Value> = self.outputs.iter().map(|out| {
-            let type_val = out.type_script.as_ref().map(|s| script_json(s));
-            serde_json::json!({
-                "capacity": format!("0x{:x}", out.capacity),
-                "lock": script_json(&out.lock_script),
-                "type": type_val,
+        let inputs: Vec<serde_json::Value> = self
+            .inputs
+            .iter()
+            .map(|inp| {
+                serde_json::json!({
+                    "previous_output": {
+                        "tx_hash": format!("0x{}", hex::encode(inp.previous_outpoint.tx_hash)),
+                        "index": format!("0x{:x}", inp.previous_outpoint.index),
+                    },
+                    "since": format!("0x{:x}", inp.since),
+                })
             })
-        }).collect();
+            .collect();
+
+        let outputs: Vec<serde_json::Value> = self
+            .outputs
+            .iter()
+            .map(|out| {
+                let type_val = out.type_script.as_ref().map(|s| script_json(s));
+                serde_json::json!({
+                    "capacity": format!("0x{:x}", out.capacity),
+                    "lock": script_json(&out.lock_script),
+                    "type": type_val,
+                })
+            })
+            .collect();
 
         // One empty data entry per output
         let outputs_data: Vec<&str> = self.outputs.iter().map(|_| "0x").collect();
 
         // Witnesses as raw packed bytes in hex
-        let witnesses: Vec<String> = self.witnesses.iter().map(|w| {
-            format!("0x{}", hex::encode(w.pack().as_slice()))
-        }).collect();
+        let witnesses: Vec<String> = self
+            .witnesses
+            .iter()
+            .map(|w| format!("0x{}", hex::encode(w.pack().as_slice())))
+            .collect();
 
         serde_json::json!({
             "version": format!("0x{:x}", self.version),
@@ -440,25 +484,24 @@ impl CKBTransaction{
             "witnesses": witnesses,
         })
     }
-
 }
 
 // Impl pack for nested structures (Outpoint, CellInput, CellOuput, CellDep, WitnessArgs) and CKB script for CellOutput
-impl OutPoint{
-    pub fn pack(&self) -> MolOutpoint{
+impl OutPoint {
+    pub fn pack(&self) -> MolOutpoint {
         MolOutpoint::new_builder()
-        .tx_hash(Byte32::from_slice(&self.tx_hash).unwrap())
-        .index(Uint32::from_slice(&self.index.to_le_bytes()).unwrap())
-        .build()
+            .tx_hash(Byte32::from_slice(&self.tx_hash).unwrap())
+            .index(Uint32::from_slice(&self.index.to_le_bytes()).unwrap())
+            .build()
     }
 }
 
 impl CellInput {
     pub fn pack(&self) -> MolCellInput {
         MolCellInput::new_builder()
-        .previous_outpoint(self.previous_outpoint.pack())
-        .since(Uint64::from_slice(&self.since.to_le_bytes()).unwrap())
-        .build()
+            .previous_outpoint(self.previous_outpoint.pack())
+            .since(Uint64::from_slice(&self.since.to_le_bytes()).unwrap())
+            .build()
     }
 }
 
@@ -466,13 +509,13 @@ impl CellOutput {
     pub fn pack(&self) -> MolCellOutput {
         let type_script = match self.type_script {
             Some(s) => ScriptOpt::new_builder().set(Some(s.pack())).build(),
-            None => ScriptOpt::default()
+            None => ScriptOpt::default(),
         };
         MolCellOutput::new_builder()
-        .capacity(Uint64::from_slice(&self.capacity.to_le_bytes()).unwrap())
-        .lock(self.lock_script.pack())
-        .type_(type_script)
-        .build()
+            .capacity(Uint64::from_slice(&self.capacity.to_le_bytes()).unwrap())
+            .lock(self.lock_script.pack())
+            .type_(type_script)
+            .build()
     }
 }
 
@@ -487,12 +530,12 @@ impl CellDep {
 
 impl WitnessArgs {
     /// Conversion of self to Molecule compatible data type
-    pub fn pack(&self) -> MolWitnessArgs{
+    pub fn pack(&self) -> MolWitnessArgs {
         // transform the original Vec<u8> to Bytes
         let lock = self.lock.as_ref().map(|l| Bytes::from(l.clone()));
         let input = self.input_type.as_ref().map(|i| Bytes::from(i.clone()));
         let output = self.output_type.as_ref().map(|o| Bytes::from(o.clone()));
-        
+
         MolWitnessArgs::new_builder()
             .lock(BytesOpt::new_builder().set(lock).build())
             .input_type(BytesOpt::new_builder().set(input).build())
@@ -501,15 +544,13 @@ impl WitnessArgs {
     }
 }
 
-
-
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use std::collections::HashMap;
-    use crate::data::{CkbScript, CkbCell, Account};
+    use crate::data::{Account, CkbCell, CkbScript};
     use crate::network::consensus::MockLedger;
     use secp256k1::SecretKey;
+    use std::collections::HashMap;
 
     // ---- shared fixtures ----
 
@@ -517,29 +558,53 @@ mod e2e_tests {
     fn make_actor(secret: [u8; 32]) -> (Account, SecretKey, CkbScript) {
         let account = Account::from_secret(secret);
         let sk = SecretKey::from_byte_array(secret).unwrap();
-        let lock = CkbScript { code_hash: [0xABu8; 32], hash_type: 1, args: account.pubkey_hash };
+        let lock = CkbScript {
+            code_hash: [0xABu8; 32],
+            hash_type: 1,
+            args: account.pubkey_hash,
+        };
         (account, sk, lock)
     }
 
     fn make_ledger() -> MockLedger {
-        MockLedger { live_cell: HashMap::new() }
+        MockLedger {
+            live_cell: HashMap::new(),
+        }
     }
 
     fn outpoint(seed: u8) -> OutPoint {
-        OutPoint { tx_hash: [seed; 32], index: 0 }
+        OutPoint {
+            tx_hash: [seed; 32],
+            index: 0,
+        }
     }
 
     fn cell_output(capacity: u64, lock: CkbScript) -> CellOutput {
-        CellOutput { capacity, lock_script: lock, type_script: None }
+        CellOutput {
+            capacity,
+            lock_script: lock,
+            type_script: None,
+        }
     }
 
-    fn unsigned_transfer_tx(from_outpoint: OutPoint, to_lock: CkbScript, capacity: u64) -> CKBTransaction {
+    fn unsigned_transfer_tx(
+        from_outpoint: OutPoint,
+        to_lock: CkbScript,
+        capacity: u64,
+    ) -> CKBTransaction {
         CKBTransaction {
             version: 0,
             cell_deps: vec![],
             header_deps: [0u8; 32],
-            inputs: vec![CellInput { previous_outpoint: from_outpoint, since: 0 }],
-            witnesses: vec![WitnessArgs { lock: None, input_type: None, output_type: None }],
+            inputs: vec![CellInput {
+                previous_outpoint: from_outpoint,
+                since: 0,
+            }],
+            witnesses: vec![WitnessArgs {
+                lock: None,
+                input_type: None,
+                output_type: None,
+            }],
             outputs: vec![cell_output(capacity, to_lock)],
             output_data: vec![],
         }
@@ -604,8 +669,15 @@ mod e2e_tests {
             version: 0,
             cell_deps: vec![],
             header_deps: [0u8; 32],
-            inputs: vec![CellInput { previous_outpoint: outpoint(0xAA), since: 100 }],
-            witnesses: vec![WitnessArgs { lock: None, input_type: None, output_type: None }],
+            inputs: vec![CellInput {
+                previous_outpoint: outpoint(0xAA),
+                since: 100,
+            }],
+            witnesses: vec![WitnessArgs {
+                lock: None,
+                input_type: None,
+                output_type: None,
+            }],
             outputs: vec![cell_output(99_0000_0000, bob_lock)],
             output_data: vec![],
         };
@@ -622,7 +694,10 @@ mod e2e_tests {
             version: 0,
             cell_deps: vec![],
             header_deps: [0u8; 32],
-            inputs: vec![CellInput { previous_outpoint: outpoint(0xAA), since: 0 }],
+            inputs: vec![CellInput {
+                previous_outpoint: outpoint(0xAA),
+                since: 0,
+            }],
             witnesses: vec![],
             outputs: vec![cell_output(99_0000_0000, bob_lock)],
             output_data: vec![],
@@ -643,12 +718,26 @@ mod e2e_tests {
             cell_deps: vec![],
             header_deps: [0u8; 32],
             inputs: vec![
-                CellInput { previous_outpoint: outpoint(0xAA), since: 0 },
-                CellInput { previous_outpoint: outpoint(0xBB), since: 0 },
+                CellInput {
+                    previous_outpoint: outpoint(0xAA),
+                    since: 0,
+                },
+                CellInput {
+                    previous_outpoint: outpoint(0xBB),
+                    since: 0,
+                },
             ],
             witnesses: vec![
-                WitnessArgs { lock: None, input_type: None, output_type: None },
-                WitnessArgs { lock: None, input_type: None, output_type: None },
+                WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                },
+                WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                },
             ],
             outputs: vec![cell_output(99_0000_0000, bob_lock)],
             output_data: vec![],
@@ -667,7 +756,9 @@ mod e2e_tests {
         let (_, _, lock) = make_actor([0x01u8; 32]);
         let mut ledger = make_ledger();
         let op = outpoint(0x01);
-        ledger.birth_cell(&op, cell_output(100_0000_0000, lock)).unwrap();
+        ledger
+            .birth_cell(&op, cell_output(100_0000_0000, lock))
+            .unwrap();
         assert!(ledger.is_live(&op));
     }
 
@@ -676,7 +767,9 @@ mod e2e_tests {
         let (_, _, lock) = make_actor([0x01u8; 32]);
         let mut ledger = make_ledger();
         let op = outpoint(0x01);
-        ledger.birth_cell(&op, cell_output(100_0000_0000, lock)).unwrap();
+        ledger
+            .birth_cell(&op, cell_output(100_0000_0000, lock))
+            .unwrap();
         ledger.kill_cell(&op).unwrap();
         assert!(!ledger.is_live(&op));
     }
@@ -686,8 +779,16 @@ mod e2e_tests {
         let (_, _, lock) = make_actor([0x01u8; 32]);
         let mut ledger = make_ledger();
         let op = outpoint(0x01);
-        assert!(ledger.birth_cell(&op, cell_output(100_0000_0000, lock)).is_ok());
-        assert!(ledger.birth_cell(&op, cell_output(200_0000_0000, lock)).is_err());
+        assert!(
+            ledger
+                .birth_cell(&op, cell_output(100_0000_0000, lock))
+                .is_ok()
+        );
+        assert!(
+            ledger
+                .birth_cell(&op, cell_output(200_0000_0000, lock))
+                .is_err()
+        );
         assert_eq!(ledger.live_cell[&op].capacity, 100_0000_0000);
     }
 
@@ -696,7 +797,9 @@ mod e2e_tests {
         let (_, _, lock) = make_actor([0x01u8; 32]);
         let mut ledger = make_ledger();
         let op = outpoint(0x01);
-        ledger.birth_cell(&op, cell_output(100_0000_0000, lock)).unwrap();
+        ledger
+            .birth_cell(&op, cell_output(100_0000_0000, lock))
+            .unwrap();
         assert!(ledger.kill_cell(&op).is_ok());
         assert!(ledger.kill_cell(&op).is_err());
     }
@@ -719,7 +822,9 @@ mod e2e_tests {
 
         let mut ledger = make_ledger();
         let alice_op = outpoint(0xAA);
-        ledger.birth_cell(&alice_op, cell_output(200_0000_0000, alice_lock)).unwrap();
+        ledger
+            .birth_cell(&alice_op, cell_output(200_0000_0000, alice_lock))
+            .unwrap();
         assert!(ledger.is_live(&alice_op));
 
         // ownership: Alice can unlock, Bob cannot
@@ -733,9 +838,14 @@ mod e2e_tests {
         tx.sign(&alice, &cells).unwrap();
         assert!(tx.validate_spend(0, &cells).is_ok());
 
-        let bob_op = OutPoint { tx_hash: tx.hash(), index: 0 };
+        let bob_op = OutPoint {
+            tx_hash: tx.hash(),
+            index: 0,
+        };
         ledger.kill_cell(&alice_op).unwrap();
-        ledger.birth_cell(&bob_op, cell_output(199_0000_0000, bob_lock)).unwrap();
+        ledger
+            .birth_cell(&bob_op, cell_output(199_0000_0000, bob_lock))
+            .unwrap();
 
         assert!(!ledger.is_live(&alice_op));
         assert!(ledger.is_live(&bob_op));
@@ -753,7 +863,10 @@ mod e2e_tests {
 
         assert_ne!(tx_to_bob.hash(), tx_to_carol.hash());
         assert_ne!(tx_to_bob.create_sighash(), tx_to_carol.create_sighash());
-        assert_ne!(tx_to_bob.create_signature(alice_sk), tx_to_carol.create_signature(alice_sk));
+        assert_ne!(
+            tx_to_bob.create_signature(alice_sk),
+            tx_to_carol.create_signature(alice_sk)
+        );
     }
 
     #[test]
@@ -792,20 +905,38 @@ mod e2e_tests {
         let mut ledger = make_ledger();
         let op_a = outpoint(0xA1);
         let op_b = outpoint(0xA2);
-        ledger.birth_cell(&op_a, cell_output(100_0000_0000, alice_lock)).unwrap();
-        ledger.birth_cell(&op_b, cell_output(100_0000_0000, alice_lock)).unwrap();
+        ledger
+            .birth_cell(&op_a, cell_output(100_0000_0000, alice_lock))
+            .unwrap();
+        ledger
+            .birth_cell(&op_b, cell_output(100_0000_0000, alice_lock))
+            .unwrap();
 
         let mut tx = CKBTransaction {
             version: 0,
             cell_deps: vec![],
             header_deps: [0u8; 32],
             inputs: vec![
-                CellInput { previous_outpoint: op_a, since: 0 },
-                CellInput { previous_outpoint: op_b, since: 0 },
+                CellInput {
+                    previous_outpoint: op_a,
+                    since: 0,
+                },
+                CellInput {
+                    previous_outpoint: op_b,
+                    since: 0,
+                },
             ],
             witnesses: vec![
-                WitnessArgs { lock: None, input_type: None, output_type: None },
-                WitnessArgs { lock: None, input_type: None, output_type: None },
+                WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                },
+                WitnessArgs {
+                    lock: None,
+                    input_type: None,
+                    output_type: None,
+                },
             ],
             outputs: vec![cell_output(199_0000_0000, alice_lock)],
             output_data: vec![],
@@ -822,10 +953,15 @@ mod e2e_tests {
         // witnesses[1] as-is, so mutating it changes the sighash and invalidates the signature.
         assert!(tx.validate_spend(1, &cells).is_err());
 
-        let merged_op = OutPoint { tx_hash: tx.hash(), index: 0 };
+        let merged_op = OutPoint {
+            tx_hash: tx.hash(),
+            index: 0,
+        };
         ledger.kill_cell(&op_a).unwrap();
         ledger.kill_cell(&op_b).unwrap();
-        ledger.birth_cell(&merged_op, cell_output(199_0000_0000, alice_lock)).unwrap();
+        ledger
+            .birth_cell(&merged_op, cell_output(199_0000_0000, alice_lock))
+            .unwrap();
 
         assert!(!ledger.is_live(&op_a));
         assert!(!ledger.is_live(&op_b));
@@ -840,16 +976,26 @@ mod e2e_tests {
 
         let mut ledger = make_ledger();
         let alice_op = outpoint(0xAA);
-        ledger.birth_cell(&alice_op, cell_output(100_0000_0000, alice_lock)).unwrap();
+        ledger
+            .birth_cell(&alice_op, cell_output(100_0000_0000, alice_lock))
+            .unwrap();
 
         let mut tx1 = unsigned_transfer_tx(alice_op, bob_lock, 99_0000_0000);
-        tx1.sign(&alice, &[CkbCell::new_for_test(100_0000_0000, alice_lock)]).unwrap();
-        assert!(tx1.validate_spend(0, &[CkbCell::new_for_test(100_0000_0000, alice_lock)]).is_ok());
+        tx1.sign(&alice, &[CkbCell::new_for_test(100_0000_0000, alice_lock)])
+            .unwrap();
+        assert!(
+            tx1.validate_spend(0, &[CkbCell::new_for_test(100_0000_0000, alice_lock)])
+                .is_ok()
+        );
         ledger.kill_cell(&alice_op).unwrap();
 
         let mut tx2 = unsigned_transfer_tx(alice_op, bob_lock, 99_0000_0000);
-        tx2.sign(&alice, &[CkbCell::new_for_test(100_0000_0000, alice_lock)]).unwrap();
-        assert!(tx2.validate_spend(0, &[CkbCell::new_for_test(100_0000_0000, alice_lock)]).is_ok()); // tx itself looks valid...
+        tx2.sign(&alice, &[CkbCell::new_for_test(100_0000_0000, alice_lock)])
+            .unwrap();
+        assert!(
+            tx2.validate_spend(0, &[CkbCell::new_for_test(100_0000_0000, alice_lock)])
+                .is_ok()
+        ); // tx itself looks valid...
         assert!(ledger.kill_cell(&alice_op).is_err()); // ...but ledger rejects it
     }
 }
@@ -858,29 +1004,46 @@ mod e2e_tests {
 mod tests {
     use super::*;
     use crate::data::CkbScript;
-    use secp256k1::{Secp256k1, SecretKey, PublicKey, Message};
     use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
     // ---- test fixtures ----
 
     fn lock_script() -> CkbScript {
-        CkbScript { code_hash: [0xABu8; 32], hash_type: 1, args: [0xCDu8; 20] }
+        CkbScript {
+            code_hash: [0xABu8; 32],
+            hash_type: 1,
+            args: [0xCDu8; 20],
+        }
     }
 
     fn outpoint(seed: u8) -> OutPoint {
-        OutPoint { tx_hash: [seed; 32], index: seed as u32 }
+        OutPoint {
+            tx_hash: [seed; 32],
+            index: seed as u32,
+        }
     }
 
     fn witness(lock: Option<Vec<u8>>) -> WitnessArgs {
-        WitnessArgs { lock, input_type: None, output_type: None }
+        WitnessArgs {
+            lock,
+            input_type: None,
+            output_type: None,
+        }
     }
 
     fn base_tx() -> CKBTransaction {
         CKBTransaction {
             version: 0,
-            cell_deps: vec![CellDep { outpoint: outpoint(1), dep_type: 0 }],
+            cell_deps: vec![CellDep {
+                outpoint: outpoint(1),
+                dep_type: 0,
+            }],
             header_deps: [0u8; 32],
-            inputs: vec![CellInput { previous_outpoint: outpoint(2), since: 0 }],
+            inputs: vec![CellInput {
+                previous_outpoint: outpoint(2),
+                since: 0,
+            }],
             witnesses: vec![witness(None)],
             outputs: vec![CellOutput {
                 capacity: 100_0000_0000,
@@ -899,21 +1062,33 @@ mod tests {
 
     #[test]
     fn outpoint_pack_roundtrip() {
-        let mol = OutPoint { tx_hash: [0xABu8; 32], index: 7 }.pack();
+        let mol = OutPoint {
+            tx_hash: [0xABu8; 32],
+            index: 7,
+        }
+        .pack();
         assert_eq!(mol.tx_hash().as_slice(), &[0xABu8; 32]);
         assert_eq!(mol.index().as_slice(), &7u32.to_le_bytes());
     }
 
     #[test]
     fn outpoint_pack_zero() {
-        let mol = OutPoint { tx_hash: [0u8; 32], index: 0 }.pack();
+        let mol = OutPoint {
+            tx_hash: [0u8; 32],
+            index: 0,
+        }
+        .pack();
         assert_eq!(mol.tx_hash().as_slice(), &[0u8; 32]);
         assert_eq!(mol.index().as_slice(), &0u32.to_le_bytes());
     }
 
     #[test]
     fn outpoint_pack_max_index() {
-        let mol = OutPoint { tx_hash: [0u8; 32], index: u32::MAX }.pack();
+        let mol = OutPoint {
+            tx_hash: [0u8; 32],
+            index: u32::MAX,
+        }
+        .pack();
         assert_eq!(mol.index().as_slice(), &u32::MAX.to_le_bytes());
     }
 
@@ -922,23 +1097,38 @@ mod tests {
     #[test]
     fn cellinput_pack_roundtrip() {
         let mol = CellInput {
-            previous_outpoint: OutPoint { tx_hash: [0x11u8; 32], index: 3 },
+            previous_outpoint: OutPoint {
+                tx_hash: [0x11u8; 32],
+                index: 3,
+            },
             since: 1000,
-        }.pack();
+        }
+        .pack();
         assert_eq!(mol.since().as_slice(), &1000u64.to_le_bytes());
         assert_eq!(mol.previous_outpoint().tx_hash().as_slice(), &[0x11u8; 32]);
-        assert_eq!(mol.previous_outpoint().index().as_slice(), &3u32.to_le_bytes());
+        assert_eq!(
+            mol.previous_outpoint().index().as_slice(),
+            &3u32.to_le_bytes()
+        );
     }
 
     #[test]
     fn cellinput_pack_zero_since() {
-        let mol = CellInput { previous_outpoint: outpoint(0), since: 0 }.pack();
+        let mol = CellInput {
+            previous_outpoint: outpoint(0),
+            since: 0,
+        }
+        .pack();
         assert_eq!(mol.since().as_slice(), &0u64.to_le_bytes());
     }
 
     #[test]
     fn cellinput_pack_max_since() {
-        let mol = CellInput { previous_outpoint: outpoint(0), since: u64::MAX }.pack();
+        let mol = CellInput {
+            previous_outpoint: outpoint(0),
+            since: u64::MAX,
+        }
+        .pack();
         assert_eq!(mol.since().as_slice(), &u64::MAX.to_le_bytes());
     }
 
@@ -946,15 +1136,29 @@ mod tests {
 
     #[test]
     fn celloutput_pack_no_type_script() {
-        let mol = CellOutput { capacity: 500, lock_script: lock_script(), type_script: None }.pack();
+        let mol = CellOutput {
+            capacity: 500,
+            lock_script: lock_script(),
+            type_script: None,
+        }
+        .pack();
         assert_eq!(mol.capacity().as_slice(), &500u64.to_le_bytes());
         assert!(mol.type_().to_opt().is_none());
     }
 
     #[test]
     fn celloutput_pack_with_type_script() {
-        let ts = CkbScript { code_hash: [0x99u8; 32], hash_type: 0, args: [0x01u8; 20] };
-        let mol = CellOutput { capacity: 200, lock_script: lock_script(), type_script: Some(ts) }.pack();
+        let ts = CkbScript {
+            code_hash: [0x99u8; 32],
+            hash_type: 0,
+            args: [0x01u8; 20],
+        };
+        let mol = CellOutput {
+            capacity: 200,
+            lock_script: lock_script(),
+            type_script: Some(ts),
+        }
+        .pack();
         assert!(mol.type_().to_opt().is_some());
     }
 
@@ -962,14 +1166,22 @@ mod tests {
 
     #[test]
     fn celldep_pack_code_type() {
-        let mol = CellDep { outpoint: outpoint(1), dep_type: 0 }.pack();
+        let mol = CellDep {
+            outpoint: outpoint(1),
+            dep_type: 0,
+        }
+        .pack();
         assert_eq!(mol.dep_type().as_slice(), &[0u8]);
         assert_eq!(mol.out_point().tx_hash().as_slice(), &[1u8; 32]);
     }
 
     #[test]
     fn celldep_pack_dep_group_type() {
-        let mol = CellDep { outpoint: outpoint(1), dep_type: 1 }.pack();
+        let mol = CellDep {
+            outpoint: outpoint(1),
+            dep_type: 1,
+        }
+        .pack();
         assert_eq!(mol.dep_type().as_slice(), &[1u8]);
     }
 
@@ -977,7 +1189,12 @@ mod tests {
 
     #[test]
     fn witnessargs_pack_all_none() {
-        let mol = WitnessArgs { lock: None, input_type: None, output_type: None }.pack();
+        let mol = WitnessArgs {
+            lock: None,
+            input_type: None,
+            output_type: None,
+        }
+        .pack();
         assert!(mol.lock().to_opt().is_none());
         assert!(mol.input_type().to_opt().is_none());
         assert!(mol.output_type().to_opt().is_none());
@@ -989,11 +1206,15 @@ mod tests {
             lock: Some(vec![0x11u8; 10]),
             input_type: Some(vec![0x22u8; 5]),
             output_type: Some(vec![0x33u8; 3]),
-        }.pack();
+        }
+        .pack();
         assert!(mol.lock().to_opt().is_some());
         assert!(mol.input_type().to_opt().is_some());
         assert!(mol.output_type().to_opt().is_some());
-        assert_eq!(mol.lock().to_opt().unwrap().raw_data().as_ref(), [0x11u8; 10]);
+        assert_eq!(
+            mol.lock().to_opt().unwrap().raw_data().as_ref(),
+            [0x11u8; 10]
+        );
     }
 
     #[test]
@@ -1002,7 +1223,8 @@ mod tests {
             lock: Some(vec![0xAAu8; 65]),
             input_type: None,
             output_type: Some(vec![0xBBu8; 4]),
-        }.pack();
+        }
+        .pack();
         assert!(mol.lock().to_opt().is_some());
         assert!(mol.input_type().to_opt().is_none());
         assert!(mol.output_type().to_opt().is_some());
@@ -1023,8 +1245,14 @@ mod tests {
 
     #[test]
     fn hash_changes_with_version() {
-        let tx_a = CKBTransaction { version: 0, ..base_tx() };
-        let tx_b = CKBTransaction { version: 1, ..base_tx() };
+        let tx_a = CKBTransaction {
+            version: 0,
+            ..base_tx()
+        };
+        let tx_b = CKBTransaction {
+            version: 1,
+            ..base_tx()
+        };
         assert_ne!(tx_a.hash(), tx_b.hash());
     }
 
@@ -1032,7 +1260,11 @@ mod tests {
     fn hash_changes_with_output_capacity() {
         let tx_a = base_tx();
         let tx_b = CKBTransaction {
-            outputs: vec![CellOutput { capacity: 999, lock_script: lock_script(), type_script: None }],
+            outputs: vec![CellOutput {
+                capacity: 999,
+                lock_script: lock_script(),
+                type_script: None,
+            }],
             ..base_tx()
         };
         assert_ne!(tx_a.hash(), tx_b.hash());
@@ -1041,8 +1273,14 @@ mod tests {
     #[test]
     fn hash_excludes_witnesses() {
         // hash() must not incorporate witnesses — identical tx body, different witnesses → same hash
-        let tx_a = CKBTransaction { witnesses: vec![], ..base_tx() };
-        let tx_b = CKBTransaction { witnesses: vec![witness(Some(vec![0xFF; 32]))], ..base_tx() };
+        let tx_a = CKBTransaction {
+            witnesses: vec![],
+            ..base_tx()
+        };
+        let tx_b = CKBTransaction {
+            witnesses: vec![witness(Some(vec![0xFF; 32]))],
+            ..base_tx()
+        };
         assert_eq!(tx_a.hash(), tx_b.hash());
     }
 
@@ -1065,8 +1303,14 @@ mod tests {
     fn sighash_first_witness_lock_is_zeroed() {
         // witness[0].lock is replaced with 65 zeros during hashing, so its actual
         // content must not affect the sighash — that is the placeholder invariant
-        let tx_a = CKBTransaction { witnesses: vec![witness(Some(vec![0x01u8; 65]))], ..base_tx() };
-        let tx_b = CKBTransaction { witnesses: vec![witness(Some(vec![0xFFu8; 65]))], ..base_tx() };
+        let tx_a = CKBTransaction {
+            witnesses: vec![witness(Some(vec![0x01u8; 65]))],
+            ..base_tx()
+        };
+        let tx_b = CKBTransaction {
+            witnesses: vec![witness(Some(vec![0xFFu8; 65]))],
+            ..base_tx()
+        };
         assert_eq!(tx_a.create_sighash(), tx_b.create_sighash());
     }
 
@@ -1074,9 +1318,14 @@ mod tests {
     fn sighash_no_witnesses_equals_hash_of_raw_tx_hash() {
         // With zero witnesses the hasher only processes the raw_tx_hash, so we can
         // reproduce the expected value independently
-        let tx = CKBTransaction { witnesses: vec![], ..base_tx() };
+        let tx = CKBTransaction {
+            witnesses: vec![],
+            ..base_tx()
+        };
         let raw = tx.hash();
-        let mut h = blake2b_rs::Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut h = blake2b_rs::Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         h.update(&raw);
         let mut expected = [0u8; 32];
         h.finalize(&mut expected);
@@ -1086,7 +1335,10 @@ mod tests {
     #[test]
     fn sighash_second_witness_is_not_zeroed() {
         // Unlike witness[0], subsequent witnesses are hashed as-is
-        let tx_a = CKBTransaction { witnesses: vec![witness(None), witness(None)], ..base_tx() };
+        let tx_a = CKBTransaction {
+            witnesses: vec![witness(None), witness(None)],
+            ..base_tx()
+        };
         let tx_b = CKBTransaction {
             witnesses: vec![witness(None), witness(Some(vec![0xFFu8; 10]))],
             ..base_tx()
@@ -1098,7 +1350,11 @@ mod tests {
     fn sighash_changes_with_tx_body() {
         let tx_a = base_tx();
         let tx_b = CKBTransaction {
-            outputs: vec![CellOutput { capacity: 999, lock_script: lock_script(), type_script: None }],
+            outputs: vec![CellOutput {
+                capacity: 999,
+                lock_script: lock_script(),
+                type_script: None,
+            }],
             ..base_tx()
         };
         assert_ne!(tx_a.create_sighash(), tx_b.create_sighash());
@@ -1114,7 +1370,11 @@ mod tests {
     #[test]
     fn signature_recovery_id_is_valid() {
         let sig = base_tx().create_signature(sk());
-        assert!(sig[64] == 0 || sig[64] == 1, "recovery id must be 0 or 1, got {}", sig[64]);
+        assert!(
+            sig[64] == 0 || sig[64] == 1,
+            "recovery id must be 0 or 1, got {}",
+            sig[64]
+        );
     }
 
     #[test]
@@ -1136,7 +1396,11 @@ mod tests {
     fn signature_differs_for_different_transactions() {
         let tx_a = base_tx();
         let tx_b = CKBTransaction {
-            outputs: vec![CellOutput { capacity: 999, lock_script: lock_script(), type_script: None }],
+            outputs: vec![CellOutput {
+                capacity: 999,
+                lock_script: lock_script(),
+                type_script: None,
+            }],
             ..base_tx()
         };
         assert_ne!(tx_a.create_signature(sk()), tx_b.create_signature(sk()));

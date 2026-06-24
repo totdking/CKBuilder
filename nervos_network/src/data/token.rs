@@ -1,2 +1,2 @@
 #[allow(dead_code)]
-pub struct CkbToken{}
+pub struct CkbToken {}

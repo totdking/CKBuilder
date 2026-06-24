@@ -1,7 +1,6 @@
+pub mod account;
 pub mod cell;
 pub mod token;
-pub mod account;
 
-pub(crate) use cell::{CkbScript, CkbCell};
 pub use account::Account;
-
+pub(crate) use cell::{CkbCell, CkbScript};

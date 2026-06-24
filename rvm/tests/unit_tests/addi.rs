@@ -1,5 +1,5 @@
-use rvm::data_type::ckbvm::CkbVm;
 use super::common::vm_with_ix;
+use rvm::data_type::ckbvm::CkbVm;
 
 #[test]
 fn add_i_stores_result_in_rd() {

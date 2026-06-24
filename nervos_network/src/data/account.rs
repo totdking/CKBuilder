@@ -1,23 +1,23 @@
-use secp256k1::{SecretKey, Secp256k1, PublicKey};
 use blake2b_rs::Blake2bBuilder;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 // Secret : raw entropy/ random 32 bytes pulled from mnemonic phrase
-// private key [u8;32] 32 bytes 
+// private key [u8;32] 32 bytes
 // public key [u8;33] 33 bytes
 // pubkey hash [u8;20] 160 bits / 20 bytes / H160
 // Address 95 chars
 
-pub struct Account{
+pub struct Account {
     #[allow(dead_code)]
-    pub private_key : [u8;32],
-    pub pubkey_hash: [u8;20]
+    pub private_key: [u8; 32],
+    pub pubkey_hash: [u8; 20],
 }
 
 impl Account {
     /// To generate an Account keypair from 32 byte entropy secret key
-    /// 
+    ///
     /// secret -> Public Key -> Hash -> Truncate
-    pub fn from_secret(secret: [u8;32]) -> Self {
+    pub fn from_secret(secret: [u8; 32]) -> Self {
         // Convert raw bytes to a Secp Secretkey Object
         let sk = SecretKey::from_byte_array(secret).expect("Invalid secret key length or range");
 
@@ -27,19 +27,21 @@ impl Account {
         let ser_pubkey = pubkey.serialize();
 
         // Hash the Public Key using personalized Blake2b Using ckb-hash
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         hasher.update(&ser_pubkey);
-        let mut full_hash = [0u8;32];
+        let mut full_hash = [0u8; 32];
         hasher.finalize(&mut full_hash);
 
         // Truncate to 20 bytes (The "Blake160" / pubkey_hash)
-        let mut pubkey_hash = [0u8;20];
+        let mut pubkey_hash = [0u8; 20];
         pubkey_hash.copy_from_slice(&full_hash[0..20]);
 
         // return the finalized account gotten
-        Self{
+        Self {
             private_key: secret,
-            pubkey_hash
+            pubkey_hash,
         }
     }
 }
@@ -47,13 +49,13 @@ impl Account {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::{SecretKey, Secp256k1, PublicKey};
     use blake2b_rs::Blake2bBuilder;
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
     #[test]
     fn test_from_secret_derives_pubkey_hash() {
         // choose a deterministic secret
-        let secret: [u8;32] = [0x11u8; 32];
+        let secret: [u8; 32] = [0x11u8; 32];
 
         // run the constructor
         let acct = Account::from_secret(secret);
@@ -64,12 +66,14 @@ mod tests {
         let pubkey = PublicKey::from_secret_key(&secp, &sk);
         let ser_pubkey = pubkey.serialize();
 
-        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hasher = Blake2bBuilder::new(32)
+            .personal(b"ckb-default-hash")
+            .build();
         hasher.update(&ser_pubkey);
-        let mut full_hash = [0u8;32];
+        let mut full_hash = [0u8; 32];
         hasher.finalize(&mut full_hash);
 
-        let mut expected = [0u8;20];
+        let mut expected = [0u8; 20];
         expected.copy_from_slice(&full_hash[0..20]);
 
         assert_eq!(acct.pubkey_hash, expected);

@@ -5,8 +5,10 @@ pub mod array32 {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
         let s = String::deserialize(d)?;
-        hex::decode(&s).map_err(D::Error::custom)?
-            .try_into().map_err(|_| D::Error::custom("expected 32 bytes"))
+        hex::decode(&s)
+            .map_err(D::Error::custom)?
+            .try_into()
+            .map_err(|_| D::Error::custom("expected 32 bytes"))
     }
 }
 
@@ -17,8 +19,10 @@ pub mod array20 {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 20], D::Error> {
         let s = String::deserialize(d)?;
-        hex::decode(&s).map_err(D::Error::custom)?
-            .try_into().map_err(|_| D::Error::custom("expected 20 bytes"))
+        hex::decode(&s)
+            .map_err(D::Error::custom)?
+            .try_into()
+            .map_err(|_| D::Error::custom("expected 20 bytes"))
     }
 }
 
