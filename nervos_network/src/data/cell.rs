@@ -2,15 +2,14 @@ use anyhow::{Ok, Result, anyhow};
 use bech32::{self, Bech32m, Hrp};
 use molecule::prelude::{Builder, Entity};
 use serde::{Serialize, Deserialize};
-use crate::network::consensus::MockLedger;
-use crate::network::transaction::{OutPoint, CellOutput};
 use crate::data::account::Account;
-// for transaction of generaton of ckb schema serialized tx using moleculec
+use crate::network::rpc::Network;
 use crate::schemas::{Byte32, Bytes, Script};
 
 
 /// Ckb Cell is consumed and the data in it is replaced by another cell
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CkbCell{
     /// Size of the cell in shannons
     pub capacity: u64,
@@ -35,12 +34,17 @@ pub struct CkbScript {
     /// - 2	"Data1"	code_hash is the Blake2b hash of the binary. Uses VM v1.
     /// - 4	"Data2"	code_hash is the Blake2b hash of the binary. Uses VM v2.
     pub hash_type: u8,
-    /// Arguments as the CkbScript input: **pubkey_hash of Account**
+    /// Arguments as the CkbScript input(20 bytes): **pubkey_hash of Account** i.e. for lockscript
+    /// 
+    /// should be 20 - 28 bytes for multisig ops (20 for multi-sig script preimage & 8 for time locks) ||
+    /// 20 - 22 bytes for Anyone Can Pay ops ||
+    /// For typescript & User Defined Tokens, it is 32 bytes
     #[serde(with = "crate::cli::hex_serde::array20")]
     pub args: [u8;20],
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum HashType{
     Data,
     Type,
@@ -80,6 +84,7 @@ impl CkbScript{
     }
 
     /// returns hashtype of lockscript
+    #[allow(dead_code)]
     pub fn hash_type(&self) -> HashType{
         match self.hash_type{
             0 => HashType::Data,
@@ -101,61 +106,36 @@ impl CkbScript{
 }
 
 impl CkbCell{
-    pub fn load_cell(&self){}
-   
-    pub fn consume_cell(mut mockledger: MockLedger, outpoint: &OutPoint) -> Result<()> {
-        mockledger.kill_cell(outpoint)
-    }
-    pub fn create_cell(mut mockledger: MockLedger, outpoint: &OutPoint, cell: CellOutput) -> Result<()> {
-        mockledger.birth_cell(outpoint, cell)
-    }
-
-    /// Before any tx on any cell can occur, it has to first unlock the lockscript
-    /// 
-    /// account to unlock a lock script 
-    /// Lock Script args(pubkey hash) and if it is a valid hash-type
+    /// Returns true if this account owns this cell's lock script.
+    /// Use before building a transaction to verify the sender can sign for this cell.
     pub fn can_unlock_script(&self, account: &Account) -> bool {
-        // lockscript args
-        if account.pubkey_hash != self.lock_script.args{
-            return false
-        }
-        // Transaction witness
-        if !self.lock_script.is_valid_hash_type(){
-            return false
-        }
-        true
-    }
-
-    /// true is live, false is dead cell
-    pub fn is_live(mockledger: &MockLedger, outpoint: &OutPoint) -> bool {
-        MockLedger::is_live(&mockledger, outpoint)
+        account.pubkey_hash == self.lock_script.args && self.lock_script.is_valid_hash_type()
     }
 
     /// One account can have several addresses due to different lockscripts
-    pub fn create_address(lock_script: CkbScript) -> Result<String> {
-        let CkbScript { code_hash,  hash_type, args } = lock_script;
+    pub fn create_address(lock_script: CkbScript, network: Network) -> Result<String> {
+        let CkbScript { code_hash, hash_type, args } = lock_script;
 
-        // Check to see if it is a valid hashtype used for lockscript
-        if !lock_script.is_valid_hash_type(){
+        if !lock_script.is_valid_hash_type() {
             return Err(anyhow!("Not valid hash type"));
         }
 
-        // create payload
-        let mut payload = Vec::with_capacity(32+1+20);
+        // payload: format-byte | code_hash (32) | hash_type (1) | args (20)
+        let mut payload = Vec::with_capacity(32 + 1 + 20);
         payload.push(0x00);
         payload.extend_from_slice(&code_hash);
         payload.push(hash_type);
         payload.extend_from_slice(&args);
 
-        // ckt for testnet and ckb for mainnet
-        let hrp = Hrp::parse("ckb")?;
-        // pass in address parameters
+        // ckt for testnet, ckb for mainnet
+        let hrp = Hrp::parse(network.hrp())?;
         let address = bech32::encode::<Bech32m>(hrp, &payload)?;
         Ok(address)
     }
 }
 
 impl CkbCell {
+    #[allow(dead_code)]
     pub fn new(capacity: u64, lock_script: CkbScript) -> Self {
         CkbCell { capacity, data: vec![], lock_script, type_script: None }
     }
@@ -184,7 +164,9 @@ mod tests{
             hash_type: 01 ,
             args: hex::decode("b39bbc0b3673c7d36450bc14cfcdad2d559c6c64").unwrap().as_array().unwrap().to_owned()
         };
-        let address = CkbCell::create_address(lock_script2).unwrap();
+        let address = CkbCell::create_address(lock_script2, Network::Testnet).unwrap();
         println!("{:?}", address)
     }
 }
+
+// NOTE: 1kb = 10^8 shannons / 100,000,000 shannons

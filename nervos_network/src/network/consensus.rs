@@ -1,13 +1,23 @@
+// Educational mock only — not used in production.
+// In production, cell liveness is determined by the CKB indexer RPC (get_cells),
+// and cells are consumed/created by broadcasting transactions via send_transaction.
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use serde::{Serialize, Deserialize};
+#[cfg(test)]
 use crate::network::transaction::{OutPoint, CellOutput};
+#[cfg(test)]
 use anyhow::{Result, anyhow};
 
+#[cfg(test)]
 pub struct MockLedger{
     pub live_cell: HashMap<OutPoint, CellOutput>
 }
 
+#[cfg(test)]
 impl MockLedger{
     pub fn is_live(&self, outpoint: &OutPoint) -> bool {
         // self.live_cell.contains_key(outpoint)
@@ -58,11 +68,13 @@ impl MockLedger{
     }
 }
 
+#[cfg(test)]
 #[derive(Serialize, Deserialize)]
 struct LedgerData {
     cells: Vec<CellEntry>,
 }
 
+#[cfg(test)]
 #[derive(Serialize, Deserialize)]
 struct CellEntry {
     outpoint: OutPoint,

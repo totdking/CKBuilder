@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::network::transaction::CKBTransaction;
 pub struct Block{
     /// Header contains the block’s metadata

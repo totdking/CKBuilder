@@ -4,18 +4,190 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand};
 use secp256k1::SecretKey;
+use serde::{Deserialize, Serialize};
 
 use crate::data::{Account, CkbScript};
 use crate::data::cell::CkbCell;
 use crate::network::transaction::{CKBTransaction, CellDep, CellInput, CellOutput, OutPoint, WitnessArgs};
-use crate::network::consensus::MockLedger;
+use crate::network::rpc::{
+    CkbRpcClient, DEVNET_RPC, Network, SECP256K1_CODE_HASH, SECP256K1_DEP_INDEX,
+    SECP256K1_DEP_TYPE, MIN_CELL_CAPACITY, select_cells, estimate_fee,
+};
+
+// ── Config file ───────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct CkbConfig {
+    network: Network,
+}
+
+/// ~/.config/ckb/config.json
+fn default_config_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("ckb").join("config.json")
+}
+
+fn load_config() -> CkbConfig {
+    let path = default_config_path();
+    if let Ok(json) = std::fs::read_to_string(&path) {
+        if let Ok(cfg) = serde_json::from_str::<CkbConfig>(&json) {
+            return cfg;
+        }
+    }
+    CkbConfig { network: Network::Testnet }
+}
+
+fn save_config(cfg: &CkbConfig) -> Result<()> {
+    let path = default_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(cfg)?)?;
+    Ok(())
+}
+
+// ── Keypair file ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct KeyFile {
+    secret_key: String,
+    pubkey_hash: String,
+    address_testnet: String,
+    address_mainnet: String,
+}
+
+impl KeyFile {
+    fn active_address(&self, network: Network) -> &str {
+        match network {
+            Network::Testnet | Network::Devnet => &self.address_testnet,
+            Network::Mainnet => &self.address_mainnet,
+        }
+    }
+}
+
+/// ~/.config/ckb/key.json
+fn default_keypair_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("ckb").join("key.json")
+}
+
+fn load_keypair(path: &Path) -> Result<[u8; 32]> {
+    let json = std::fs::read_to_string(path).map_err(|_| {
+        anyhow!(
+            "no keypair found at {}\nRun `ckb account new` to generate one",
+            path.display()
+        )
+    })?;
+    let kf: KeyFile = serde_json::from_str(&json)
+        .map_err(|e| anyhow!("keypair file is malformed: {}", e))?;
+    parse32(&kf.secret_key)
+}
+
+/// Resolves a secret key from either --secret hex, --keypair path, or the default keypair file.
+fn resolve_secret(keypair: Option<&Path>, secret: Option<&str>) -> Result<[u8; 32]> {
+    if let Some(s) = secret {
+        return parse32(s);
+    }
+    let path = keypair
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_keypair_path);
+    load_keypair(&path)
+}
+
+// ── Hex helpers ───────────────────────────────────────────────────────────────
+
+fn parse32(s: &str) -> Result<[u8; 32]> {
+    let s = s.trim_start_matches("0x");
+    hex::decode(s)?
+        .try_into()
+        .map_err(|_| anyhow!("expected 32-byte hex string, got {} bytes from '{}'", s.len() / 2, s))
+}
+
+fn parse20(s: &str) -> Result<[u8; 20]> {
+    let s = s.trim_start_matches("0x");
+    hex::decode(s)?
+        .try_into()
+        .map_err(|_| anyhow!("expected 20-byte hex string, got {} bytes from '{}'", s.len() / 2, s))
+}
+
+// ── hash_type parser ─────────────────────────────────────────────────────────
+
+fn parse_hash_type(s: &str) -> Result<u8> {
+    match s {
+        "data" => Ok(0),
+        "type" => Ok(1),
+        other => Err(anyhow!("unknown hash_type '{}' — use 'data' or 'type'", other)),
+    }
+}
+
+// ── CKB amount parser (CKB → shannons) ───────────────────────────────────────
+
+/// Accepts "100" or "100.5" as CKB, returns shannons (u64).
+/// 1 CKB = 100,000,000 shannons. Minimum 61 CKB (a cell must cover its own storage).
+fn parse_ckb_amount(s: &str) -> Result<u64> {
+    let ckb: f64 = s.parse().map_err(|_| anyhow!("invalid CKB amount '{}' — use a number like 100 or 61.5", s))?;
+    if ckb <= 0.0 {
+        return Err(anyhow!("amount must be positive, got {}", s));
+    }
+    let shannons = (ckb * 1e8).round() as u64;
+    if shannons < MIN_CELL_CAPACITY {
+        return Err(anyhow!(
+            "amount too small: {} shannons ({} CKB) — minimum is {} shannons (61 CKB)",
+            shannons, s, MIN_CELL_CAPACITY
+        ));
+    }
+    Ok(shannons)
+}
+
+// ── Address / pubkey_hash parser ──────────────────────────────────────────────
+
+/// Accepts a bech32m CKB address ("ckt1q..." / "ckb1q...") or a 20-byte hex string.
+/// Returns the pubkey_hash (lock script args) as [u8; 20].
+fn parse_addr_or_pubkey_hash(s: &str) -> Result<[u8; 20]> {
+    if s.starts_with("ckt1") || s.starts_with("ckb1") {
+        // Decode bech32m — payload layout: 0x00 | code_hash(32) | hash_type(1) | args(N)
+        let (_, payload) = bech32::decode(s)
+            .map_err(|e| anyhow!("invalid bech32m address '{}': {}", s, e))?;
+        if payload.len() < 54 {
+            return Err(anyhow!(
+                "address payload too short ({} bytes); expected at least 54 (1 + 32 + 1 + 20)",
+                payload.len()
+            ));
+        }
+        if payload[0] != 0x00 {
+            return Err(anyhow!("only full-format CKB addresses are supported (payload must start with 0x00)"));
+        }
+        let mut args = [0u8; 20];
+        args.copy_from_slice(&payload[34..54]);
+        return Ok(args);
+    }
+    // Fall through: treat as 20-byte hex
+    parse20(s).map_err(|_| anyhow!(
+        "invalid address or pubkey_hash '{}'\n  expected: bech32m address (ckt1... / ckb1...) or 20-byte hex (0x...)",
+        s
+    ))
+}
+
+// ── Outpoint string parser ("txhash:index") ───────────────────────────────────
+
+fn parse_outpoint_str(s: &str) -> Result<([u8; 32], u32)> {
+    let (hash_part, index_part) = s.split_once(':').ok_or_else(|| {
+        anyhow!("invalid outpoint '{}' — expected format: <txhash>:<index>  e.g. 71a7ba8f...:0", s)
+    })?;
+    let tx_hash = parse32(hash_part)?;
+    let index: u32 = index_part.parse()
+        .map_err(|_| anyhow!("invalid outpoint index '{}' — must be a number", index_part))?;
+    Ok((tx_hash, index))
+}
+
+// ── CLI root ──────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "ckbuilder", about = "CKB mock network tool", version)]
+#[command(name = "ckb", about = "CKB developer toolkit", version)]
 pub struct Cli {
-    /// Path to the persistent ledger state file
-    #[arg(long, default_value = "src/ledger/ledger.json", global = true)]
-    pub ledger: PathBuf,
+    /// Use local offckb devnet (http://localhost:8114) for this command only
+    #[arg(long, short = 'd', global = true)]
+    pub devnet: bool,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -23,25 +195,90 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Generate an account keypair from a secret key
-    Account(AccountArgs),
-    /// Derive a bech32 CKB address from a lock script
-    Address(AddressArgs),
-    /// Manage the persistent mock ledger
+    /// Manage your local keypair (~/.config/ckb/key.json)
     #[command(subcommand)]
-    Ledger(LedgerCmd),
-    /// Build, sign, and inspect transactions
+    Account(AccountCmd),
+    /// Advanced: derive a bech32m address from arbitrary lock script parameters
+    Address(AddressArgs),
+    /// Check the CKB balance of any address on the active network
+    Balance(BalanceArgs),
+    /// Get or set the active network (testnet / mainnet / devnet)
+    #[command(subcommand)]
+    Config(ConfigCmd),
+    /// Build, sign, inspect, and broadcast transactions
     #[command(subcommand)]
     Tx(TxCmd),
 }
 
-// ── Account ──────────────────────────────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+pub enum ConfigCmd {
+    /// Show the active network and config file path
+    Get,
+    /// Switch the active network
+    Set(ConfigSetArgs),
+}
 
 #[derive(Args)]
-pub struct AccountArgs {
-    /// 32-byte secret key as hex (omit to generate a random one)
+pub struct ConfigSetArgs {
+    /// Network to activate: testnet, mainnet, or devnet (offckb localhost:8114)
+    #[arg(value_parser = ["testnet", "mainnet", "devnet"])]
+    pub network: String,
+}
+
+// ── Account ──────────────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+pub enum AccountCmd {
+    /// Generate a keypair and save it to disk (default: ~/.config/ckb/key.json)
+    New(AccountNewArgs),
+    /// Show keypair info or look up any CKB account by address / pubkey_hash
+    Show(AccountShowArgs),
+}
+
+#[derive(Args)]
+pub struct AccountNewArgs {
+    /// Import an existing secret key (32-byte hex) instead of generating a new one
     #[arg(long)]
     pub secret: Option<String>,
+    /// Save keypair to this path instead of the default (~/.config/ckb/key.json)
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Overwrite an existing keypair file
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Args)]
+pub struct AccountShowArgs {
+    /// Any CKB address (ckt1q...) or pubkey_hash (0x...) to look up.
+    /// Omit to show your local saved keypair.
+    pub addr: Option<String>,
+    /// Path to a specific keypair file (default: ~/.config/ckb/key.json)
+    #[arg(long)]
+    pub keypair: Option<PathBuf>,
+}
+
+// ── Balance ──────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct BalanceArgs {
+    /// CKB address (ckt1q...) or pubkey_hash (0x...) to query.
+    /// Omit to use your saved keypair (~/.config/ckb/key.json).
+    pub addr: Option<String>,
+    /// Use a keypair file to derive the address to query
+    #[arg(long)]
+    pub keypair: Option<PathBuf>,
+    /// Use a raw secret key (32-byte hex) to derive the address to query
+    #[arg(long)]
+    pub secret: Option<String>,
+    /// Print each individual live cell (outpoint + capacity)
+    #[arg(long)]
+    pub utxos: bool,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
 }
 
 // ── Address ──────────────────────────────────────────────────────────────────
@@ -50,101 +287,66 @@ pub struct AccountArgs {
 pub struct AddressArgs {
     #[arg(long)]
     pub code_hash: String,
-    #[arg(long)]
-    pub hash_type: u8,
-    /// 20-byte pubkey hash as hex
+    /// Script hash type: "data" (blake2b of binary) or "type" (type script hash)
+    #[arg(long, value_parser = ["data", "type"])]
+    pub hash_type: String,
     #[arg(long)]
     pub args: String,
-}
-
-// ── Ledger ───────────────────────────────────────────────────────────────────
-
-#[derive(Subcommand)]
-pub enum LedgerCmd {
-    /// Add a live cell to the ledger
-    Birth(BirthArgs),
-    /// Remove (spend) a cell from the ledger
-    Kill(OutPointArgs),
-    /// Check whether a cell is live
-    Status(OutPointArgs),
-    /// List all live cells
-    List,
-}
-
-#[derive(Args)]
-pub struct BirthArgs {
-    #[arg(long)]
-    pub tx_hash: String,
-    #[arg(long)]
-    pub index: u32,
-    /// Capacity in shannons (1 CKB = 100_000_000 shannons)
-    #[arg(long)]
-    pub capacity: u64,
-    #[arg(long)]
-    pub lock_code_hash: String,
-    #[arg(long)]
-    pub lock_hash_type: u8,
-    /// 20-byte pubkey hash as hex
-    #[arg(long)]
-    pub lock_args: String,
-}
-
-#[derive(Args)]
-pub struct OutPointArgs {
-    #[arg(long)]
-    pub tx_hash: String,
-    #[arg(long)]
-    pub index: u32,
 }
 
 // ── Tx ───────────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
 pub enum TxCmd {
-    /// Build an unsigned single-input / single-output transaction
+    /// Build an unsigned secp256k1 transaction and write it to a JSON file
     Build(BuildArgs),
-    /// Sign a transaction JSON file with a private key
+    /// Sign any unsigned CKB transaction JSON with a private key
     Sign(SignArgs),
-    /// Print the transaction hash (excludes witnesses)
+    /// Broadcast a signed transaction JSON file to the active network
+    Broadcast(BroadcastArgs),
+    /// Print the CKB-node-compatible tx hash of a transaction JSON file
     Hash(TxFileArg),
-    /// Run validate_spend check on a transaction
-    Validate(ValidateArgs),
+    /// Build, sign, and broadcast a CKB transfer in one step
+    Send(SendArgs),
 }
 
 #[derive(Args)]
 pub struct BuildArgs {
-    /// Input cell: outpoint tx hash (hex)
+    /// Input cell(s) to spend, format: <txhash>:<index>. Repeat for multiple inputs.
+    /// e.g. --from abc123...:0 --from def456...:1
+    #[arg(long, num_args = 1..)]
+    pub from: Vec<String>,
+    /// Recipient: CKB address (ckt1q...) or pubkey_hash (0x...)
     #[arg(long)]
-    pub from_tx_hash: String,
-    /// Input cell: outpoint index
+    pub to: String,
+    /// Amount to send in CKB (e.g. 100 or 61.5). Minimum 61 CKB.
     #[arg(long)]
-    pub from_index: u32,
-    /// Output capacity in shannons
+    pub amount: String,
+    /// Where to send change (default: back to the owner of the --from cell).
+    /// Use this to redirect leftover capacity to a different address.
     #[arg(long)]
-    pub to_capacity: u64,
-    /// Output lock code_hash (hex)
-    #[arg(long)]
-    pub to_code_hash: String,
-    /// Output lock hash_type (0=Data 1=Type 2=Data1 4=Data2)
-    #[arg(long)]
-    pub to_hash_type: u8,
-    /// Output lock args — recipient pubkey hash (20-byte hex)
-    #[arg(long)]
-    pub to_args: String,
-    /// Where to write the unsigned tx JSON
-    #[arg(long, default_value = "src/ledger/txs/tx.json")]
+    pub change_to: Option<String>,
+    /// Output file for the unsigned transaction JSON
+    #[arg(long, default_value = "tx.json")]
     pub out: PathBuf,
 }
 
 #[derive(Args)]
 pub struct SignArgs {
-    /// Path to the unsigned tx JSON
+    /// Path to an unsigned transaction JSON file
     #[arg(long)]
     pub tx: PathBuf,
-    /// 32-byte private key as hex
+    /// Secret key as 32-byte hex (alternative to --keypair)
     #[arg(long)]
-    pub secret: String,
-    /// Output path (default: overwrites --tx)
+    pub secret: Option<String>,
+    /// Path to a keypair JSON file (alternative to --secret; default: ~/.config/ckb/key.json)
+    #[arg(long)]
+    pub keypair: Option<PathBuf>,
+    /// Optional: assert that the derived pubkey_hash matches this 20-byte hex.
+    /// Fails early with a clear message if this key does not own the input cells.
+    #[arg(long)]
+    pub assert_owner: Option<String>,
+    /// Write the signed tx to this file (default: overwrites --tx in place)
     #[arg(long)]
     pub out: Option<PathBuf>,
 }
@@ -156,179 +358,477 @@ pub struct TxFileArg {
 }
 
 #[derive(Args)]
-pub struct ValidateArgs {
+pub struct BroadcastArgs {
+    /// Path to a signed transaction JSON file
     #[arg(long)]
     pub tx: PathBuf,
-    /// Which input index to validate (default: 0)
-    #[arg(long, default_value = "0")]
-    pub input_index: usize,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
+}
+
+#[derive(Args)]
+pub struct SendArgs {
+    /// Secret key as 32-byte hex (alternative to --keypair)
+    #[arg(long)]
+    pub secret: Option<String>,
+    /// Path to a keypair JSON file (default: ~/.config/ckb/key.json)
+    #[arg(long)]
+    pub keypair: Option<PathBuf>,
+    /// Recipient: CKB address (ckt1q...) or pubkey_hash (0x...)
+    #[arg(long)]
+    pub to: String,
+    /// Amount in CKB (e.g. 100 or 61.5). Minimum 61 CKB.
+    #[arg(long)]
+    pub amount: String,
+    /// Transaction fee in shannons (0 = auto-estimate based on tx size)
+    #[arg(long, default_value_t = 0)]
+    pub fee: u64,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Account(args) => cmd_account(args),
+        Commands::Account(cmd) => cmd_account(cmd, cli.devnet),
         Commands::Address(args) => cmd_address(args),
-        Commands::Ledger(cmd) => cmd_ledger(cmd, &cli.ledger),
-        Commands::Tx(cmd) => cmd_tx(cmd, &cli.ledger),
+        Commands::Balance(args) => cmd_balance(args, cli.devnet),
+        Commands::Config(cmd) => cmd_config(cmd),
+        Commands::Tx(cmd) => cmd_tx(cmd, cli.devnet),
     }
 }
 
-fn cmd_account(args: AccountArgs) -> Result<()> {
-    let secret: [u8; 32] = match args.secret {
-        Some(ref hex) => parse32(hex)?,
-        None => {
-            use rand::{Rng, rng};
-            let mut r = rng();
-            let mut b = [0u8; 32];
-            r.fill_bytes(&mut b);
-            b
+fn active_rpc(cfg: &CkbConfig, rpc_override: Option<&str>, devnet_flag: bool) -> String {
+    if devnet_flag {
+        return DEVNET_RPC.to_string();
+    }
+    rpc_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| cfg.network.rpc_url().to_string())
+}
+
+fn active_network(cfg: &CkbConfig, devnet_flag: bool) -> Network {
+    if devnet_flag { Network::Devnet } else { cfg.network }
+}
+
+fn cmd_config(cmd: ConfigCmd) -> Result<()> {
+    match cmd {
+        ConfigCmd::Get => {
+            let cfg = load_config();
+            println!("network:     {}", cfg.network);
+            println!("rpc:         {}", cfg.network.rpc_url());
+            println!("config file: {}", default_config_path().display());
         }
-    };
-    let account = Account::from_secret(secret);
-    println!("secret_key:  {}", hex::encode(secret));
-    println!("pubkey_hash: {}", hex::encode(account.pubkey_hash));
+        ConfigCmd::Set(args) => {
+            let network = match args.network.as_str() {
+                "testnet" => Network::Testnet,
+                "mainnet" => Network::Mainnet,
+                "devnet"  => Network::Devnet,
+                other => return Err(anyhow!("unknown network '{}' — use testnet, mainnet, or devnet", other)),
+            };
+            save_config(&CkbConfig { network })?;
+            println!("network set to: {}", network);
+            println!("rpc endpoint:   {}", network.rpc_url());
+            if network == Network::Devnet {
+                println!("note:           start offckb with `npx offckb node` to run a local CKB devnet");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_account(cmd: AccountCmd, devnet_flag: bool) -> Result<()> {
+    match cmd {
+        AccountCmd::New(args) => {
+            let secret: [u8; 32] = match args.secret {
+                Some(ref hex) => parse32(hex)?,
+                None => {
+                    use rand::{Rng, rng};
+                    let mut r = rng();
+                    let mut b = [0u8; 32];
+                    r.fill_bytes(&mut b);
+                    b
+                }
+            };
+
+            let out = args.out.unwrap_or_else(default_keypair_path);
+
+            if out.exists() && !args.force {
+                return Err(anyhow!(
+                    "keypair already exists at {}\nUse --force to overwrite",
+                    out.display()
+                ));
+            }
+
+            let account = Account::from_secret(secret);
+            let lock = CkbScript {
+                code_hash: SECP256K1_CODE_HASH,
+                hash_type: 1,
+                args: account.pubkey_hash,
+            };
+
+            let address_testnet = CkbCell::create_address(lock, Network::Testnet)?;
+            let address_mainnet = CkbCell::create_address(lock, Network::Mainnet)?;
+
+            let kf = KeyFile {
+                secret_key: hex::encode(secret),
+                pubkey_hash: hex::encode(account.pubkey_hash),
+                address_testnet: address_testnet.clone(),
+                address_mainnet: address_mainnet.clone(),
+            };
+
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&out, serde_json::to_string_pretty(&kf)?)?;
+
+            let cfg = load_config();
+            let net = active_network(&cfg, devnet_flag);
+            println!("keypair saved:      {}", out.display());
+            println!("pubkey_hash:        0x{}", hex::encode(account.pubkey_hash));
+            println!("address (testnet):  {}", address_testnet);
+            println!("address (mainnet):  {}", address_mainnet);
+            println!("active network:     {} → {}", net, kf.active_address(net));
+            println!();
+            println!("WARNING: keep {} secret — do not commit it to git", out.display());
+        }
+
+        AccountCmd::Show(args) => {
+            // If a positional address / pubkey_hash is given, look it up without needing a keypair
+            if let Some(ref addr_str) = args.addr {
+                let pubkey_hash = parse_addr_or_pubkey_hash(addr_str)?;
+                let lock = CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: pubkey_hash };
+                let address_testnet = CkbCell::create_address(lock, Network::Testnet)?;
+                let address_mainnet = CkbCell::create_address(lock, Network::Mainnet)?;
+                println!("pubkey_hash:       0x{}", hex::encode(pubkey_hash));
+                println!("address (testnet): {}", address_testnet);
+                println!("address (mainnet): {}", address_mainnet);
+                println!("note:              use `ckb balance {}` to check the balance", addr_str);
+                return Ok(());
+            }
+
+            // No positional arg — show the local keypair file
+            let path = args.keypair.unwrap_or_else(default_keypair_path);
+            let json = std::fs::read_to_string(&path)
+                .map_err(|_| anyhow!("no keypair at {}\nRun `ckb account new` first", path.display()))?;
+            let kf: KeyFile = serde_json::from_str(&json)?;
+            let cfg = load_config();
+            let net = active_network(&cfg, devnet_flag);
+            println!("keypair:           {}", path.display());
+            println!("pubkey_hash:       0x{}", kf.pubkey_hash);
+            println!("network:           {}", net);
+            println!("address (active):  {}", kf.active_address(net));
+            println!("address (testnet): {}", kf.address_testnet);
+            println!("address (mainnet): {}", kf.address_mainnet);
+        }
+    }
     Ok(())
 }
 
 fn cmd_address(args: AddressArgs) -> Result<()> {
+    let cfg = load_config();
     let lock = CkbScript {
         code_hash: parse32(&args.code_hash)?,
-        hash_type: args.hash_type,
+        hash_type: parse_hash_type(&args.hash_type)?,
         args: parse20(&args.args)?,
     };
-    let addr = CkbCell::create_address(lock)?;
+    let addr = CkbCell::create_address(lock, cfg.network)?;
     println!("{}", addr);
     Ok(())
 }
 
-fn cmd_ledger(cmd: LedgerCmd, path: &Path) -> Result<()> {
-    match cmd {
-        LedgerCmd::Birth(args) => {
-            let mut ledger = MockLedger::load(path)?;
-            let op = OutPoint { tx_hash: parse32(&args.tx_hash)?, index: args.index };
-            let lock = CkbScript {
-                code_hash: parse32(&args.lock_code_hash)?,
-                hash_type: args.lock_hash_type,
-                args: parse20(&args.lock_args)?,
-            };
-            ledger.birth_cell(&op, CellOutput { capacity: args.capacity, lock_script: lock, type_script: None })?;
-            ledger.save(path)?;
-            println!("birthed  {}:{}", hex::encode(op.tx_hash), op.index);
-        }
-        LedgerCmd::Kill(args) => {
-            let mut ledger = MockLedger::load(path)?;
-            let op = OutPoint { tx_hash: parse32(&args.tx_hash)?, index: args.index };
-            ledger.kill_cell(&op)?;
-            ledger.save(path)?;
-            println!("killed   {}:{}", hex::encode(op.tx_hash), op.index);
-        }
-        LedgerCmd::Status(args) => {
-            let ledger = MockLedger::load(path)?;
-            let op = OutPoint { tx_hash: parse32(&args.tx_hash)?, index: args.index };
-            println!("{}", if ledger.is_live(&op) { "live" } else { "dead" });
-        }
-        LedgerCmd::List => {
-            let ledger = MockLedger::load(path)?;
-            if ledger.live_cell.is_empty() {
-                println!("(no live cells)");
-            } else {
-                for (op, cell) in &ledger.live_cell {
-                    println!(
-                        "{}:{}  capacity={}  lock={}:{}:{}",
-                        hex::encode(op.tx_hash),
-                        op.index,
-                        cell.capacity,
-                        hex::encode(cell.lock_script.code_hash),
-                        cell.lock_script.hash_type,
-                        hex::encode(cell.lock_script.args),
-                    );
-                }
-            }
+fn cmd_balance(args: BalanceArgs, devnet_flag: bool) -> Result<()> {
+    let cfg = load_config();
+    let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+    let net = active_network(&cfg, devnet_flag);
+
+    // Resolve pubkey_hash: positional address/hex → key derivation → default keypair
+    let pubkey_hash: [u8; 20] = if let Some(ref addr) = args.addr {
+        parse_addr_or_pubkey_hash(addr)?
+    } else {
+        let secret = resolve_secret(args.keypair.as_deref(), args.secret.as_deref())?;
+        Account::from_secret(secret).pubkey_hash
+    };
+
+    let rpc = CkbRpcClient::new(&rpc_url);
+
+    println!("network:     {}", net);
+    println!("pubkey_hash: 0x{}", hex::encode(pubkey_hash));
+    println!("querying:    {}", rpc_url);
+
+    let cells = rpc.get_live_cells(pubkey_hash)?;
+    let total: u64 = cells.iter().map(|c| c.capacity).sum();
+    println!("cells:       {}", cells.len());
+    println!("balance:     {} CKB  ({} shannons)", total as f64 / 1e8, total);
+
+    if args.utxos && !cells.is_empty() {
+        println!();
+        println!("{:<6}  {:<68}  {:>18}", "#", "outpoint (txhash:index)", "capacity (shannons)");
+        println!("{}", "-".repeat(96));
+        for (i, cell) in cells.iter().enumerate() {
+            println!(
+                "{:<6}  0x{}:{:<4}  {:>18}",
+                i,
+                hex::encode(cell.out_point.tx_hash),
+                cell.out_point.index,
+                cell.capacity
+            );
         }
     }
     Ok(())
 }
 
-fn cmd_tx(cmd: TxCmd, ledger_path: &Path) -> Result<()> {
+fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
     match cmd {
         TxCmd::Build(args) => {
+            let cfg = load_config();
+            let net = active_network(&cfg, devnet_flag);
+            let rpc_url = active_rpc(&cfg, None, devnet_flag);
+            let to_pubkey_hash = parse_addr_or_pubkey_hash(&args.to)?;
+            let amount = parse_ckb_amount(&args.amount)?;
+
+            let rpc = CkbRpcClient::new(&rpc_url);
+
+            // Fetch all input cells
+            let mut inputs: Vec<CellInput> = Vec::new();
+            let mut total_input_capacity = 0u64;
+            let mut first_sender_lock_args: Option<[u8; 20]> = None;
+
+            for from_str in &args.from {
+                let (tx_hash, index) = parse_outpoint_str(from_str)?;
+                let outpoint = OutPoint { tx_hash, index };
+                let (cap, lock_args) = rpc.get_cell_info(&outpoint)?;
+                total_input_capacity = total_input_capacity
+                    .checked_add(cap)
+                    .ok_or_else(|| anyhow!("input capacity overflow"))?;
+                if first_sender_lock_args.is_none() {
+                    first_sender_lock_args = Some(lock_args);
+                }
+                inputs.push(CellInput { previous_outpoint: outpoint, since: 0 });
+            }
+
+            let sender_lock_args = first_sender_lock_args.unwrap();
+            let change_lock_args = if let Some(ref ct) = args.change_to {
+                parse_addr_or_pubkey_hash(ct)?
+            } else {
+                sender_lock_args
+            };
+
+            // Estimate fee assuming 2 outputs (with change); adjust if change is absorbed
+            let fee = estimate_fee(inputs.len(), 2);
+
+            if total_input_capacity < amount + fee {
+                return Err(anyhow!(
+                    "inputs total {} shannons ({:.8} CKB) — not enough to send {} shannons ({:.8} CKB) + fee {} shannons",
+                    total_input_capacity, total_input_capacity as f64 / 1e8,
+                    amount, amount as f64 / 1e8,
+                    fee,
+                ));
+            }
+
+            let raw_change = total_input_capacity - amount - fee;
+            let (change, actual_fee) = if raw_change > 0 && raw_change < MIN_CELL_CAPACITY {
+                (0u64, total_input_capacity - amount)   // absorb dust into fee
+            } else {
+                (raw_change, fee)
+            };
+
+            let mut outputs = vec![CellOutput {
+                capacity: amount,
+                lock_script: CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: to_pubkey_hash },
+                type_script: None,
+            }];
+            if change > 0 {
+                outputs.push(CellOutput {
+                    capacity: change,
+                    lock_script: CkbScript { code_hash: SECP256K1_CODE_HASH, hash_type: 1, args: change_lock_args },
+                    type_script: None,
+                });
+            }
+
+            let witnesses: Vec<WitnessArgs> = (0..inputs.len())
+                .map(|_| WitnessArgs { lock: None, input_type: None, output_type: None })
+                .collect();
+
             let tx = CKBTransaction {
                 version: 0,
-                cell_deps: vec![],
+                cell_deps: vec![CellDep {
+                    outpoint: OutPoint { tx_hash: net.secp256k1_dep_tx_hash(), index: SECP256K1_DEP_INDEX },
+                    dep_type: SECP256K1_DEP_TYPE,
+                }],
                 header_deps: [0u8; 32],
-                inputs: vec![CellInput {
-                    previous_outpoint: OutPoint { tx_hash: parse32(&args.from_tx_hash)?, index: args.from_index },
-                    since: 0,
-                }],
-                witnesses: vec![WitnessArgs { lock: None, input_type: None, output_type: None }],
-                outputs: vec![CellOutput {
-                    capacity: args.to_capacity,
-                    lock_script: CkbScript {
-                        code_hash: parse32(&args.to_code_hash)?,
-                        hash_type: args.to_hash_type,
-                        args: parse20(&args.to_args)?,
-                    },
-                    type_script: None,
-                }],
+                inputs,
+                witnesses,
+                outputs,
                 output_data: vec![],
             };
+
             std::fs::write(&args.out, serde_json::to_string_pretty(&tx)?)?;
-            println!("tx_hash: {}", hex::encode(tx.hash()));
-            println!("written: {}", args.out.display());
+            let change_dest = if args.change_to.is_some() { "→ change-to address" } else { "→ back to sender" };
+            println!("tx hash:  0x{}", hex::encode(tx.rpc_raw_tx_hash()));
+            println!("inputs:   {} cell(s), {} shannons total ({:.8} CKB)", tx.inputs.len(), total_input_capacity, total_input_capacity as f64 / 1e8);
+            println!("send:     {} shannons ({:.8} CKB)", amount, amount as f64 / 1e8);
+            println!("change:   {} shannons ({:.8} CKB) {}", change, change as f64 / 1e8, change_dest);
+            println!("fee:      {} shannons ({:.8} CKB)", actual_fee, actual_fee as f64 / 1e8);
+            println!("written:  {}", args.out.display());
+            println!("sign:     ckb tx sign --tx {} --keypair ~/.config/ckb/key.json", args.out.display());
         }
+
         TxCmd::Sign(args) => {
             let json = std::fs::read_to_string(&args.tx)?;
             let mut tx: CKBTransaction = serde_json::from_str(&json)?;
-            let secret = parse32(&args.secret)?;
+            let secret = resolve_secret(args.keypair.as_deref(), args.secret.as_deref())?;
+            let account = Account::from_secret(secret);
+
+            if let Some(ref expected_hex) = args.assert_owner {
+                let expected_args = parse_addr_or_pubkey_hash(expected_hex)?;
+                if account.pubkey_hash != expected_args {
+                    return Err(anyhow!(
+                        "key mismatch: derived pubkey_hash 0x{} does not match --assert-owner 0x{}\n\
+                         this key does not own those input cells",
+                        hex::encode(account.pubkey_hash),
+                        hex::encode(expected_args),
+                    ));
+                }
+            }
+
             let sk = SecretKey::from_byte_array(secret)?;
-            let sig = tx.create_signature(sk);
+            let sig = tx.create_rpc_signature(sk);
             tx.witnesses[0].lock = Some(sig.to_vec());
+
             let out = args.out.as_deref().unwrap_or(args.tx.as_path());
             std::fs::write(out, serde_json::to_string_pretty(&tx)?)?;
-            let account = Account::from_secret(secret);
-            println!("pubkey_hash: {}", hex::encode(account.pubkey_hash));
-            println!("tx_hash:     {}", hex::encode(tx.hash()));
-            println!("written:     {}", out.display());
+            println!("signer:    0x{}", hex::encode(account.pubkey_hash));
+            println!("tx hash:   0x{}", hex::encode(tx.rpc_raw_tx_hash()));
+            println!("written:   {}", out.display());
+            println!("broadcast: ckb tx broadcast --tx {}", out.display());
         }
+
+        TxCmd::Broadcast(args) => {
+            let cfg = load_config();
+            let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+            let net = active_network(&cfg, devnet_flag);
+
+            let json = std::fs::read_to_string(&args.tx)?;
+            let tx: CKBTransaction = serde_json::from_str(&json)?;
+            let tx_hash_local = tx.rpc_raw_tx_hash();
+
+            let rpc = CkbRpcClient::new(&rpc_url);
+            let tx_hash = rpc.send_transaction(tx.to_rpc_value())?;
+
+            println!("network:  {}", net);
+            println!("tx hash:  0x{}", hex::encode(tx_hash));
+            println!("explorer: {}/transaction/0x{}", net.explorer_base(), hex::encode(tx_hash));
+
+            if tx_hash != tx_hash_local {
+                eprintln!("warning: node returned hash 0x{} but local hash was 0x{}",
+                    hex::encode(tx_hash), hex::encode(tx_hash_local));
+            }
+        }
+
         TxCmd::Hash(args) => {
             let json = std::fs::read_to_string(&args.tx)?;
             let tx: CKBTransaction = serde_json::from_str(&json)?;
-            println!("{}", hex::encode(tx.hash()));
+            println!("0x{}", hex::encode(tx.rpc_raw_tx_hash()));
         }
-        TxCmd::Validate(args) => {
-            let json = std::fs::read_to_string(&args.tx)?;
-            let tx: CKBTransaction = serde_json::from_str(&json)?;
-            let ledger = MockLedger::load(ledger_path)?;
-            let cells: Vec<crate::data::cell::CkbCell> = tx.inputs.iter()
-                .map(|inp| {
-                    let co = ledger.live_cell.get(&inp.previous_outpoint)
-                        .ok_or_else(|| anyhow!("input cell {}:{} not found in ledger",
-                            hex::encode(inp.previous_outpoint.tx_hash),
-                            inp.previous_outpoint.index))?;
-                    Ok(crate::data::cell::CkbCell::new(co.capacity, co.lock_script))
-                })
-                .collect::<Result<_>>()?;
-            match tx.validate_spend(args.input_index, &cells) {
-                Ok(()) => println!("valid"),
-                Err(e) => println!("invalid: {}", e),
+
+        TxCmd::Send(args) => {
+            let cfg = load_config();
+            let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+            let net = active_network(&cfg, devnet_flag);
+            let secret = resolve_secret(args.keypair.as_deref(), args.secret.as_deref())?;
+            let account = Account::from_secret(secret);
+            let sk = secp256k1::SecretKey::from_byte_array(secret)?;
+            let to_pubkey_hash = parse_addr_or_pubkey_hash(&args.to)?;
+            let amount = parse_ckb_amount(&args.amount)?;
+
+            let rpc = CkbRpcClient::new(&rpc_url);
+
+            let cells = rpc.get_live_cells(account.pubkey_hash)?;
+            if cells.is_empty() {
+                return Err(anyhow!("no live cells found for this account on {}", rpc_url));
             }
+
+            // Use a pessimistic fee estimate (3 inputs, 2 outputs) for initial coin selection,
+            // then recompute with the actual input count.
+            let fee_for_selection = if args.fee > 0 { args.fee } else { estimate_fee(3, 2) };
+            let (selected_indices, _) = select_cells(&cells, amount, fee_for_selection)?;
+
+            let n_inputs = selected_indices.len();
+            let total_in: u64 = selected_indices.iter().map(|&i| cells[i].capacity).sum();
+            let actual_fee = if args.fee > 0 { args.fee } else { estimate_fee(n_inputs, 2) };
+
+            let inputs: Vec<CellInput> = selected_indices.iter().map(|&i| CellInput {
+                previous_outpoint: cells[i].out_point,
+                since: 0,
+            }).collect();
+
+            let raw_change = total_in.saturating_sub(amount).saturating_sub(actual_fee);
+            let change = if raw_change > 0 && raw_change < MIN_CELL_CAPACITY { 0 } else { raw_change };
+            let actual_fee = if change == 0 { total_in - amount } else { actual_fee };
+
+            let sender_lock = CkbScript {
+                code_hash: SECP256K1_CODE_HASH,
+                hash_type: 1,
+                args: account.pubkey_hash,
+            };
+            let recipient_lock = CkbScript {
+                code_hash: SECP256K1_CODE_HASH,
+                hash_type: 1,
+                args: to_pubkey_hash,
+            };
+
+            let mut outputs = vec![CellOutput {
+                capacity: amount,
+                lock_script: recipient_lock,
+                type_script: None,
+            }];
+            if change > 0 {
+                outputs.push(CellOutput {
+                    capacity: change,
+                    lock_script: sender_lock,
+                    type_script: None,
+                });
+            }
+
+            let n_inputs = inputs.len();
+            let empty_witnesses: Vec<WitnessArgs> = (0..n_inputs)
+                .map(|_| WitnessArgs { lock: None, input_type: None, output_type: None })
+                .collect();
+
+            let cell_deps = vec![CellDep {
+                outpoint: OutPoint { tx_hash: net.secp256k1_dep_tx_hash(), index: SECP256K1_DEP_INDEX },
+                dep_type: SECP256K1_DEP_TYPE,
+            }];
+
+            let mut tx = CKBTransaction {
+                version: 0,
+                cell_deps,
+                header_deps: [0u8; 32],
+                inputs,
+                witnesses: empty_witnesses,
+                outputs,
+                output_data: vec![],
+            };
+
+            let signature = tx.create_rpc_signature(sk);
+            tx.witnesses[0].lock = Some(signature.to_vec());
+
+            let tx_json = tx.to_rpc_value();
+            let tx_hash = rpc.send_transaction(tx_json)?;
+
+            println!("network:  {}", net);
+            println!("sent:     {:.8} CKB ({} shannons) to 0x{}", amount as f64 / 1e8, amount, hex::encode(to_pubkey_hash));
+            if change > 0 {
+                println!("change:   {:.8} CKB ({} shannons) back to self", change as f64 / 1e8, change);
+            }
+            println!("fee:      {} shannons ({:.8} CKB)", actual_fee, actual_fee as f64 / 1e8);
+            println!("tx hash:  0x{}", hex::encode(tx_hash));
+            println!("explorer: {}/transaction/0x{}", net.explorer_base(), hex::encode(tx_hash));
         }
     }
     Ok(())
-}
-
-// ── Hex helpers ───────────────────────────────────────────────────────────────
-
-fn parse32(s: &str) -> Result<[u8; 32]> {
-    hex::decode(s)?
-        .try_into()
-        .map_err(|_| anyhow!("expected 32-byte hex string, got {}", s))
-}
-
-fn parse20(s: &str) -> Result<[u8; 20]> {
-    hex::decode(s)?
-        .try_into()
-        .map_err(|_| anyhow!("expected 20-byte hex string, got {}", s))
 }

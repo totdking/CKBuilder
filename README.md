@@ -71,3 +71,99 @@ See [`nervos_network/README.md`](nervos_network/README.md) for full CLI document
 - Learnt the distinction between signed and unsigned load variants: `LW` sign-extends 4 bytes to 64 bits (so `0xFFFFFFFF` becomes `-1`), `LWU` zero-extends the same bytes (becoming `+4294967295`), and `LD` reads all 8 bytes with no extension needed.
 - Learnt that stores have no unsigned variants — narrowing a 64-bit register to 1/2/4 bytes always just truncates, so the signed/unsigned distinction is meaningless.
 - Implemented `load()` and `store()` in `ckbvm.rs` — both dispatch on `funct3` to select byte width, use `wrapping_add` on a signed immediate for correct negative offsets, and advance `pc` after execution.
+
+### Week 8: [15-06-2026 - 21-06-2026]
+
+#### What this toolkit adds that other types like it do not
+
+**offckb** (`ckb-ecofund/offckb`) is a local devnet launcher. Its job is to spin up a CKB node on your machine and fund test accounts. The `offckb transfer` command exists as a convenience wrapper but it is tightly coupled to the local environment — it does not work on testnet or mainnet, does not expose a manual build → sign → broadcast pipeline, and cannot be installed as a standalone binary. It also does not protect against the missing change output problem — if you use `offckb transfer` you never see what the transaction actually contains.
+
+**Orbital(Still in prod)** (`radiiplus/Orbital`) is a higher-level abstraction layer over CKB. It simplifies interactions through a framework API rather than through a developer terminal workflow. The internals of transaction construction are hidden behind the abstraction — the goal is convenience, not understanding.
+
+This CLI fills a different gap: a network-portable, terminal-native toolkit where every step of a CKB transaction is visible and controllable. The specific additions neither tool provides:
+
+| Capability | offckb | Orbital | ckb (this) |
+|---|:---:|:---:|:---:|
+| Works on testnet, mainnet, devnet with one binary | — | — | ✓ |
+| Human-readable CKB amounts (`100` not `10000000000`) | — | — | ✓ |
+| bech32m address input (no manual pubkey_hash extraction) | — | — | ✓ |
+| Manual build → sign → broadcast as separate inspectable steps | — | — | ✓ |
+| Automatic change output (protects against miner donation) | — | — | ✓ |
+| Dynamic fee scaling with transaction size | — | — | ✓ |
+| Multi-input cell aggregation (`--from` repeated) | — | — | ✓ |
+| `--change-to` redirect change to any address | — | — | ✓ |
+| `--assert-owner` early key mismatch detection before broadcast | — | — | ✓ |
+| Balance query for any address (no private key required) | — | — | ✓ |
+| Installable system binary (`cargo install ckbuilder`) | — | — | ✓ |
+| CI/CD pipeline | — | — | ✓ |
+| Local devnet environment | ✓ | — | ✓ |
+| Private key never leaves the machine | ✓ | — | ✓ |
+
+The most important distinction is the build → sign → broadcast pipeline being file-based and separated. You run `ckb tx build`, open the JSON, read every field — inputs, outputs, amounts, change address, fee — then sign and broadcast only when satisfied. offckb and Orbital collapse this into a single call where the transaction internals are never visible. The intent here is understanding what CKB transactions actually contain, not abstracting it away.
+
+---
+
+#### What I learnt
+
+**The Cell Model is a pure UTXO system**
+
+Every CKB account balance is a collection of individual cells. There is no single balance field — your "balance" is the sum of capacities across all live cells you own. When you "send" CKB, you consume one or more cells as inputs and create new cells as outputs. Cells that are not explicitly created as outputs cease to exist.
+
+**The dep_group tx hash is network-specific**
+
+Every network (mainnet, Pudge testnet, offckb devnet) has its own genesis block, which means the transaction that deploys the secp256k1 system script sits at a different tx hash on each network. Using the wrong hash causes a `TransactionFailedToResolve` error. The code hash of the secp256k1 binary itself is the same everywhere (it is derived from the binary, not the genesis), but the dep_group pointer must match the network.
+
+**outpoint = txhash:index, and index resets per transaction**
+
+A cell is uniquely identified by the tx hash that created it and its position in that transaction's output array. If a single transaction creates 5 outputs, they are indexed 0 through 4. A different transaction that also creates outputs starts back at index 0. Two cells can share an index as long as they were created by different transactions.
+
+**The change output problem — or how I accidentally donated CKB to a miner**
+
+This was the most important practical lesson. When building a transaction manually with `tx build`, I consumed a 200 CKB cell to send 100 CKB to myself. The transaction had only one output (the 100 CKB recipient cell). The remaining 100 CKB had nowhere to go — CKB's rules state that all input capacity that is not assigned to an output cell goes to the miner as a fee. There was no error, no warning — the transaction succeeded and 100 CKB silently became a miner reward.
+
+The fix: after fetching the input cell's capacity, `tx build` now calculates the leftover (`input_capacity - amount - fee`), creates a second output cell (the change output) sending that remainder back to the same address that owned the input cell. The sender's address is derived directly from the input cell's `lock_script.args` by querying the node — no private key is needed.
+
+**CKB address = encoded lock script**
+
+A CKB address is not an independent identifier — it is a bech32m encoding of a full lock script. The payload is `0x00 | code_hash (32 bytes) | hash_type (1 byte) | args (20 bytes)`. The `args` field is what uniquely identifies the owner (the pubkey_hash). This means decoding an address and extracting `payload[34..54]` gives you the pubkey_hash directly, with no additional derivation.
+
+**offckb devnet has a deterministic genesis**
+
+Every offckb devnet starts from the same genesis block, so the dep_group tx hash for devnet is always the same fixed value (`4d804f14...`). This is unlike a real chain where genesis is variable — offckb intentionally freezes the genesis so developers get a predictable local environment every time.
+
+#### What I built
+
+**Developer-friendly CLI overhaul**
+
+Rewrote the entire CLI from a prototype requiring raw hex inputs into a tool that accepts human-readable values:
+
+- `balance` now accepts any bech32m address or pubkey_hash — no private key needed for a read-only query
+- `--to` accepts a full bech32m address (`ckt1q...`) rather than a raw 20-byte hex pubkey_hash
+- `--amount` accepts CKB notation (`100` or `61.5`) rather than raw shannons (`10000000000`)
+- `tx build` simplified from 6 flags down to 3: `--from`, `--to`, `--amount`
+- `tx sign` accepts `--keypair` or `--secret` and falls back to `~/.config/ckb/key.json` by default
+- `--assert-owner` flag on `tx sign` for early ownership mismatch detection
+
+**Devnet as a first-class network**
+
+Added `Network::Devnet` pointing to offckb on `localhost:8114`. Added a global `--devnet` / `-d` flag so any command can target the local devnet without changing the saved config. Hardcoded the correct dep_group tx hash for the offckb genesis.
+
+**Automatic change output in `tx build`**
+
+`tx build` fetches the input cell from the node via `get_live_cell` RPC, reads its capacity and lock args, calculates the change (`input_capacity - amount - fee`), and automatically creates a second output returning the change to the original cell owner. If the change would be below 61 CKB (the minimum cell capacity), it is absorbed into the miner fee rather than creating an invalid dust cell.
+
+**`tx broadcast` command**
+
+Added the missing link in the manual flow: `tx broadcast --tx signed.json` reads a signed transaction JSON file, submits it via `send_transaction` RPC, and prints the tx hash and block explorer link.
+
+**Multi-input `tx build`**
+
+`--from` now accepts multiple values (`--from hash:0 --from hash:1 ...`). All input cells are fetched, their capacities summed, and change is calculated from the total. Witnesses are created for each input.
+
+**Dynamic fee estimation**
+
+Replaced the hardcoded 1000-shannon constant with `estimate_fee(n_inputs, n_outputs)` — a formula based on the approximate serialized byte size of the transaction multiplied by CKB's minimum fee rate of 1000 shannons/KB, clamped between 1000 and 100,000 shannons. Both `tx build` and `tx send` now use dynamic fee, and `tx send --fee 0` (the new default) auto-estimates.
+
+**CI/CD pipeline**
+
+Added `.github/workflows/ci.yml` — runs on every push and pull request: format check (`cargo fmt`), build, tests, and clippy with `-D warnings`.

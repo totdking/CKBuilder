@@ -1,6 +1,5 @@
 use secp256k1::{SecretKey, Secp256k1, PublicKey};
 use blake2b_rs::Blake2bBuilder;
-use crate::data::{CkbScript, cell};
 
 // Secret : raw entropy/ random 32 bytes pulled from mnemonic phrase
 // private key [u8;32] 32 bytes 
@@ -9,9 +8,8 @@ use crate::data::{CkbScript, cell};
 // Address 95 chars
 
 pub struct Account{
-    // for signing (key)
+    #[allow(dead_code)]
     pub private_key : [u8;32],
-    // for identification (lock)
     pub pubkey_hash: [u8;20]
 }
 
@@ -43,17 +41,6 @@ impl Account {
             private_key: secret,
             pubkey_hash
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct Address(String);
-
-impl Address {
-    /// Generates a Bech32m CKB address from a lock script
-    pub fn from_script(lock_script: CkbScript) -> Address{
-        let add_str = cell::CkbCell::create_address(lock_script);
-        Address(add_str.unwrap())
     }
 }
 

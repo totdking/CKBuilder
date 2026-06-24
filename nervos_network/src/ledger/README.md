@@ -1,10 +1,25 @@
 # ledger
 
-This folder is the persistent storage location for the mock CKB ledger state.
+Persistent storage for the **mock** CKB ledger state used in unit and integration tests.
 
-When the CLI writes or reads ledger state, it targets a JSON file in this directory. The default file is `src/ledger/ledger.json`.
+> **Note:** This folder is not used in production. In production, cell liveness is managed by a real CKB node and queried via the `get_cells` indexer RPC in `src/network/rpc.rs`. The mock ledger exists only to support offline testing without a running node.
 
-Each JSON file represents a snapshot of the live cell set at a point in time — a flat list of outpoint/cell pairs:
+---
+
+## What is the ledger?
+
+In CKB, the global state is a set of **live cells** — cells that have been created by a transaction and not yet consumed. When a transaction is broadcast, it:
+
+1. Kills its input cells (removes them from the live set)
+2. Births its output cells (adds them to the live set)
+
+The mock ledger (`MockLedger` in `src/network/consensus.rs`) replicates this logic in memory using a `HashMap<OutPoint, CellOutput>`.
+
+---
+
+## Storage format
+
+The mock ledger persists to a JSON file in this directory. Default path: `src/ledger/ledger.json`.
 
 ```json
 {
@@ -28,4 +43,15 @@ Each JSON file represents a snapshot of the live cell set at a point in time —
 }
 ```
 
-To point the CLI at this directory, pass `--ledger src/ledger/ledger.json` on any command, or run all commands from the project root with the default overridden.
+Each entry maps an `OutPoint` (tx_hash + index) to a `CellOutput` (capacity + lock + type). An outpoint present in this file is "live" — one that has been removed is "dead" (spent).
+
+---
+
+## Usage in tests
+
+The `MockLedger` is used in `consensus.rs` and the e2e test suite in `transaction.rs` to verify that:
+
+- Cells cannot be double-spent
+- Cells cannot be born twice at the same outpoint
+- Spending a dead cell is rejected
+- The full sign → validate → kill → birth cycle works correctly offline

@@ -2,6 +2,7 @@ use blake2b_rs::Blake2bBuilder;
 use molecule::{prelude::*,};
 use anyhow::{anyhow, Ok, Result};
 use secp256k1::{self, Message, Secp256k1, SecretKey, ecdsa::{RecoverableSignature, RecoveryId}};
+use serde_json;
 
 use crate::schemas::{*, Byte32, Uint32, Bytes, OutPoint as MolOutpoint, 
     CellInput as MolCellInput, CellOutput as MolCellOutput, ScriptOpt, RawTransactionBuilder, 
@@ -65,6 +66,7 @@ pub struct OutPoint {
     pub index: u32,
 }
 
+#[allow(dead_code)]
 pub enum TxState{
     Pending,
     Confirmed,
@@ -75,6 +77,7 @@ pub enum TxState{
     Abandoned
 }
 
+#[allow(dead_code)]
 impl CKBTransaction{
 
     /// Helper function to return transaction builder
@@ -276,9 +279,166 @@ impl CKBTransaction{
         Ok(())
     }
 
-    /// Send to the network to CKB rpc nodes
+    #[allow(dead_code)]
     pub fn broadcast(&self, _transaction: Transaction) {
         todo!()
+    }
+
+    /// Computes the raw transaction hash compatible with the real CKB node.
+    ///
+    /// The auto-generated Molecule schema in this project stores `header_deps` as a single
+    /// `Byte32` (32 bytes), but the real CKB spec uses `Byte32Vec` (empty = 4 bytes: `[0,0,0,0]`).
+    /// This method assembles the correct Molecule Table layout manually so the hash matches
+    /// what the CKB node computes.
+    pub fn rpc_raw_tx_hash(&self) -> [u8; 32] {
+        let version_mol = Uint32::from_slice(&self.version.to_le_bytes()).unwrap();
+        let cell_deps_mol = CellDepVec::new_builder()
+            .extend(self.cell_deps.iter().map(|d| d.pack()))
+            .build();
+        // Correct empty Byte32Vec: item_count=0 → [00 00 00 00]
+        let header_deps_mol: [u8; 4] = [0u8, 0, 0, 0];
+        let inputs_mol = CellInputVec::new_builder()
+            .extend(self.inputs.iter().map(|i| i.pack()))
+            .build();
+        let outputs_mol = CellOutputVec::new_builder()
+            .extend(self.outputs.iter().map(|o| o.pack()))
+            .build();
+        // One empty Bytes per output (no cell data for simple transfers)
+        let outputs_data_mol = BytesVec::new_builder()
+            .extend(self.outputs.iter().map(|_| Bytes::new_builder().build()))
+            .build();
+
+        let fields: &[&[u8]] = &[
+            version_mol.as_slice(),
+            cell_deps_mol.as_slice(),
+            &header_deps_mol,
+            inputs_mol.as_slice(),
+            outputs_mol.as_slice(),
+            outputs_data_mol.as_slice(),
+        ];
+
+        // Molecule Table layout: [total_size u32] [n×offset u32] [field_data...]
+        let header_size = (fields.len() + 1) * 4;
+        let data_size: usize = fields.iter().map(|f| f.len()).sum();
+        let total_size = header_size + data_size;
+
+        let mut raw_tx = Vec::with_capacity(total_size);
+        raw_tx.extend_from_slice(&(total_size as u32).to_le_bytes());
+        let mut offset = header_size;
+        for f in fields {
+            raw_tx.extend_from_slice(&(offset as u32).to_le_bytes());
+            offset += f.len();
+        }
+        for f in fields {
+            raw_tx.extend_from_slice(f);
+        }
+
+        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        let mut hash = [0u8; 32];
+        hasher.update(&raw_tx);
+        hasher.finalize(&mut hash);
+        hash
+    }
+
+    /// CKB sighash_all using the real-network-compatible raw tx hash.
+    pub fn create_rpc_sighash(&self) -> [u8; 32] {
+        let raw_tx_hash = self.rpc_raw_tx_hash();
+        let mut hasher = Blake2bBuilder::new(32).personal(b"ckb-default-hash").build();
+        hasher.update(&raw_tx_hash);
+
+        for (i, witness) in self.witnesses.iter().enumerate() {
+            let witness_bytes = if i == 0 {
+                let mut signed_witness = witness.clone();
+                signed_witness.lock = Some(vec![0u8; 65]);
+                signed_witness.pack().as_bytes()
+            } else {
+                witness.pack().as_bytes()
+            };
+            let len = (witness_bytes.len() as u64).to_le_bytes();
+            hasher.update(&len);
+            hasher.update(&witness_bytes);
+        }
+
+        let mut sig_hash = [0u8; 32];
+        hasher.finalize(&mut sig_hash);
+        sig_hash
+    }
+
+    /// Produces a 65-byte recoverable signature valid for the real CKB network.
+    pub fn create_rpc_signature(&self, private_key: SecretKey) -> [u8; 65] {
+        let sig_hash = self.create_rpc_sighash();
+        let secp = Secp256k1::new();
+        let msg = Message::from_digest(sig_hash);
+        let sig = secp.sign_ecdsa_recoverable(msg, &private_key);
+        let (recovery_id, sig_bytes) = sig.serialize_compact();
+        let mut signature = [0u8; 65];
+        signature[0..64].copy_from_slice(&sig_bytes);
+        signature[64] = recovery_id as u8;
+        signature
+    }
+
+    /// Serializes the transaction into the JSON format expected by the CKB node's RPC.
+    pub fn to_rpc_value(&self) -> serde_json::Value {
+        let hash_type_str = |ht: u8| match ht {
+            0 => "data",
+            1 => "type",
+            2 => "data1",
+            4 => "data2",
+            _ => "type",
+        };
+
+        let script_json = |s: &CkbScript| serde_json::json!({
+            "code_hash": format!("0x{}", hex::encode(s.code_hash)),
+            "hash_type": hash_type_str(s.hash_type),
+            "args": format!("0x{}", hex::encode(s.args)),
+        });
+
+        let cell_deps: Vec<serde_json::Value> = self.cell_deps.iter().map(|dep| {
+            serde_json::json!({
+                "out_point": {
+                    "tx_hash": format!("0x{}", hex::encode(dep.outpoint.tx_hash)),
+                    "index": format!("0x{:x}", dep.outpoint.index),
+                },
+                "dep_type": if dep.dep_type == 1 { "dep_group" } else { "code" },
+            })
+        }).collect();
+
+        let inputs: Vec<serde_json::Value> = self.inputs.iter().map(|inp| {
+            serde_json::json!({
+                "previous_output": {
+                    "tx_hash": format!("0x{}", hex::encode(inp.previous_outpoint.tx_hash)),
+                    "index": format!("0x{:x}", inp.previous_outpoint.index),
+                },
+                "since": format!("0x{:x}", inp.since),
+            })
+        }).collect();
+
+        let outputs: Vec<serde_json::Value> = self.outputs.iter().map(|out| {
+            let type_val = out.type_script.as_ref().map(|s| script_json(s));
+            serde_json::json!({
+                "capacity": format!("0x{:x}", out.capacity),
+                "lock": script_json(&out.lock_script),
+                "type": type_val,
+            })
+        }).collect();
+
+        // One empty data entry per output
+        let outputs_data: Vec<&str> = self.outputs.iter().map(|_| "0x").collect();
+
+        // Witnesses as raw packed bytes in hex
+        let witnesses: Vec<String> = self.witnesses.iter().map(|w| {
+            format!("0x{}", hex::encode(w.pack().as_slice()))
+        }).collect();
+
+        serde_json::json!({
+            "version": format!("0x{:x}", self.version),
+            "cell_deps": cell_deps,
+            "header_deps": [],
+            "inputs": inputs,
+            "outputs": outputs,
+            "outputs_data": outputs_data,
+            "witnesses": witnesses,
+        })
     }
 
 }
@@ -342,15 +502,6 @@ impl WitnessArgs {
 }
 
 
-pub fn validate() {
-
-}
-pub fn propagate() {
-
-}
-pub fn confirm() {
-
-}
 
 #[cfg(test)]
 mod e2e_tests {

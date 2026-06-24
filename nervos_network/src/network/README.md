@@ -1,94 +1,125 @@
 # network
 
-The network layer models how CKB transactions are constructed, signed, validated, and how cell state is tracked across the mock ledger.
+The network layer handles everything that requires talking to a CKB node or serializing data for the wire format: transaction construction, signing, fee estimation, RPC calls, and coin selection.
+
+---
+
+## rpc.rs
+
+### Network enum
+
+Represents the three supported networks. Each variant carries its own RPC URL, bech32 HRP, block explorer base URL, and — critically — its own secp256k1 dep_group transaction hash.
+
+| Variant | RPC | Address prefix |
+|---------|-----|----------------|
+| `Testnet` | https://testnet.ckb.dev | `ckt1...` |
+| `Mainnet` | https://mainnet.ckb.dev | `ckb1...` |
+| `Devnet` | http://localhost:8114 | `ckt1...` |
+
+The dep_group tx hash is **network-specific** because it comes from each network's genesis block. Using the wrong hash causes `TransactionFailedToResolve` errors. Three constants are defined:
+
+```rust
+SECP256K1_DEP_TX_HASH_MAINNET  // genesis tx[1] on mainnet
+SECP256K1_DEP_TX_HASH_TESTNET  // genesis tx[1] on Pudge testnet
+SECP256K1_DEP_TX_HASH_DEVNET   // genesis tx[1] on offckb devnet
+```
+
+`Network::secp256k1_dep_tx_hash()` returns the correct one for the active network.
+
+The `SECP256K1_CODE_HASH` (the hash of the secp256k1 binary itself) is the **same on all networks** — it is derived from the binary, not the genesis block.
+
+### CkbRpcClient
+
+A blocking JSON-RPC 2.0 HTTP client. All methods POST to the node's RPC endpoint.
+
+| Method | RPC call | Description |
+|--------|----------|-------------|
+| `get_live_cells(pubkey_hash)` | `get_cells` | Fetch all live cells owned by a pubkey_hash via the indexer |
+| `get_cell_info(outpoint)` | `get_live_cell` | Fetch the capacity and lock args of a specific cell by outpoint |
+| `send_transaction(tx_json)` | `send_transaction` | Broadcast a signed transaction; returns the tx hash |
+| `get_tip_block_number()` | `get_tip_block_number` | Verify the node is reachable; returns current chain height |
+
+`get_live_cells` paginates automatically using the `last_cursor` field, so it handles accounts with more than 100 cells.
+
+### Fee estimation
+
+`estimate_fee(n_inputs, n_outputs) -> u64` calculates a fee based on the approximate serialized transaction size in bytes, multiplied by CKB's minimum fee rate of 1000 shannons/KB.
+
+```
+size ≈ 200 (base)
+     + n_inputs  × 48   (per input)
+     + n_outputs × 97   (per output, secp256k1 lock)
+     + 93               (first witness with 65-byte sig)
+     + (n_inputs - 1) × 16   (empty witnesses for additional inputs)
+
+fee = ceil(size × 1000 / 1024)
+    clamped to [1000, 100_000] shannons
+```
+
+This replaces the old hardcoded 1000-shannon constant and scales correctly with multi-input transactions.
+
+### Coin selection
+
+`select_cells(cells, amount, fee) -> (selected_indices, change)` implements a greedy coin selection strategy:
+
+1. Cells are pre-sorted by capacity descending (largest first)
+2. Accumulate cells until the total covers `amount + fee`
+3. If the leftover change is below `MIN_CELL_CAPACITY` (61 CKB), it is absorbed into the miner fee rather than creating an invalid dust cell
 
 ---
 
 ## transaction.rs
 
-### Structs
+### CKBTransaction
 
-**`CKBTransaction`** — the top-level transaction object.
+The top-level transaction struct. Serializes to/from JSON for storage and to the Molecule binary format for hashing and broadcasting.
 
 | Field | Type | Description |
 |---|---|---|
-| `version` | `u32` | Transaction version (currently 0) |
-| `cell_deps` | `Vec<CellDep>` | Cells referenced but not consumed (e.g. lock script binaries) |
-| `header_deps` | `[u8;32]` | Block header dependency (unused in mock, zeroed) |
-| `inputs` | `Vec<CellInput>` | Cells being consumed |
-| `witnesses` | `Vec<WitnessArgs>` | Proof data — one slot per input; `witnesses[0].lock` holds the signature |
+| `version` | `u32` | Transaction version (always 0) |
+| `cell_deps` | `Vec<CellDep>` | Read-only cell references (e.g. the secp256k1 script binary) |
+| `header_deps` | `[u8; 32]` | Block header dependency (zeroed for standard transfers) |
+| `inputs` | `Vec<CellInput>` | Cells being consumed; each has an outpoint and a `since` lock |
+| `witnesses` | `Vec<WitnessArgs>` | One slot per input; `witnesses[0].lock` holds the 65-byte signature |
 | `outputs` | `Vec<CellOutput>` | Cells being created |
-| `output_data` | `Vec<u8>` | Raw data attached to outputs |
+| `output_data` | `Vec<u8>` | Data attached to outputs (empty for simple transfers) |
 
-**`CellInput`** — a reference to a live cell being spent.
-- `previous_outpoint` — identifies the cell by tx_hash + index
-- `since` — time/height lock; must be `0` for immediate spend
+### Key methods
 
-**`CellOutput`** — a cell being created.
-- `capacity` — size in shannons (1 CKB = 100,000,000 shannons)
-- `lock_script` — defines who can spend this cell
-- `type_script` — optional rules governing the cell's data
+**`rpc_raw_tx_hash() -> [u8; 32]`**
 
-**`OutPoint`** — unique cell identifier: `tx_hash + index`.
+Computes the transaction hash the way the real CKB node does it — using a Molecule `Byte32Vec` (not `Byte32`) for `header_deps`. This distinction matters: the auto-generated schema uses the wrong type, so this method assembles the correct layout manually to produce a hash that matches the node.
 
-**`CellDep`** — a read-only cell reference: `outpoint + dep_type` (0=code, 1=dep_group).
+**`create_rpc_sighash() -> [u8; 32]`**
 
-**`WitnessArgs`** — structured witness with three optional byte fields: `lock`, `input_type`, `output_type`.
-
----
-
-### Transaction methods
-
-**`hash() -> [u8;32]`**
-
-Blake2b personalized hash (`"ckb-default-hash"`) of the Molecule-serialized `RawTransaction`. Witnesses are excluded — this is the stable identifier of the transaction body.
-
-**`create_sighash() -> [u8;32]`**
-
-Implements the CKB `sighash_all` algorithm. Commits to both the transaction body and all witnesses:
+Implements CKB's `sighash_all` algorithm over the real-network tx hash:
 
 ```
 blake2b(
-    raw_tx_hash          ← transaction body hash
-    || 8-byte-LE-len || witnesses[0] with lock zeroed to 65 bytes
-    || 8-byte-LE-len || witnesses[1]
+    rpc_raw_tx_hash
+    || len(witnesses[0]) || witnesses[0] with lock zeroed to 65 bytes
+    || len(witnesses[1]) || witnesses[1]
     ...
 )
 ```
 
-`witnesses[0].lock` is replaced with 65 zero bytes before hashing. This is the placeholder slot where the real signature will be placed — zeroing it allows the digest to be computed before the signature exists.
+`witnesses[0].lock` is replaced with 65 zero bytes before hashing so the digest can be computed before the signature exists.
 
-**`create_signature(private_key: SecretKey) -> [u8;65]`**
+**`create_rpc_signature(sk) -> [u8; 65]`**
 
-Signs the sighash with a secp256k1 recoverable ECDSA signature (RFC 6979 deterministic nonce). Returns 65 bytes:
+Signs the sighash with a secp256k1 recoverable ECDSA signature. Returns 65 bytes: `[r(32) | s(32) | v(1)]`. The recovery byte `v` lets a verifier reconstruct the signer's public key without it being transmitted separately.
 
-```
-[ r (32 bytes) | s (32 bytes) | v (1 byte) ]
-```
+**`to_rpc_value() -> serde_json::Value`**
 
-The recovery id `v` allows a verifier to reconstruct the public key from the signature alone, without it being transmitted separately.
+Serializes the transaction into the exact JSON format the CKB node's `send_transaction` RPC expects — all numbers as `0x`-prefixed hex strings, `dep_type` as `"dep_group"` or `"code"`, etc.
 
-**`sign(account: &Account, input_cells: &[CkbCell]) -> Result<Transaction>`**
+**`validate_spend(input_index, cells) -> Result<()>`**
 
-Two-phase signing:
-1. Ownership check — each input cell's `can_unlock_script(account)` must return true. Fails fast if any cell is not owned by the account.
-2. Sign — calls `create_signature`, embeds the result into `witnesses[0].lock`, and returns the Molecule-serialized transaction.
-
-**`validate_spend(input_index: usize, cells: &[CkbCell]) -> Result<()>`**
-
-Full cryptographic validation of a single input spend:
-1. `since == 0` — no time lock on the input
-2. `input_index < witnesses.len()` — a witness slot exists
-3. `witnesses[input_index].lock` is filled with exactly 65 bytes
-4. The 65-byte signature is used to recover the signer's public key via secp256k1 ECDSA recovery
-5. The recovered public key is hashed with Blake2b-160 to produce a pubkey hash
-6. The pubkey hash must match `cells[input_index].lock_script.args` — i.e. the signature must have been made by the key that owns the cell
-
-Returns `Ok(())` on success or a descriptive `Err` identifying the exact failure. This closes the security gap where any signature would pass a purely structural check — only the actual cell owner's signature is accepted.
-
-**`transaction_builder() -> TransactionBuilder`**
-
-Internal helper that assembles the full Molecule `TransactionBuilder` including witnesses, used by `sign()` to produce the final serialized transaction.
+Full cryptographic validation of a single input (used in tests):
+1. `since == 0` — no time lock
+2. Witness slot exists and has 65 bytes
+3. Recovers the signer's pubkey hash from the signature
+4. Confirms it matches `cells[input_index].lock_script.args`
 
 ---
 
@@ -96,28 +127,32 @@ Internal helper that assembles the full Molecule `TransactionBuilder` including 
 
 ### MockLedger
 
-An in-memory UTXO set: `HashMap<OutPoint, CellOutput>`.
+An in-memory UTXO set backed by `HashMap<OutPoint, CellOutput>`. Used only in tests — not in production.
 
 | Method | Description |
-|---|---|
-| `birth_cell(outpoint, cell)` | Add a live cell. Errors if the outpoint is already live (prevents double-birth). |
-| `kill_cell(outpoint)` | Remove a live cell. Errors if it doesn't exist (prevents double-spend). |
-| `is_live(outpoint)` | Returns true if the outpoint exists in the live set. |
-| `load(path)` | Deserialize ledger state from a JSON file. Returns an empty ledger if the file doesn't exist. |
-| `save(path)` | Serialize ledger state to a JSON file. Creates parent directories if needed. |
+|--------|-------------|
+| `birth_cell(outpoint, cell)` | Add a live cell; rejects duplicate outpoints |
+| `kill_cell(outpoint)` | Remove a live cell; rejects non-existent outpoints |
+| `is_live(outpoint)` | Check if an outpoint is in the live set |
+| `load(path)` | Deserialize from JSON; returns empty ledger if file absent |
+| `save(path)` | Serialize to JSON; creates parent directories if needed |
 
-The ledger serializes as a flat list of `{ outpoint, output }` entries since JSON requires string keys and `OutPoint` is a struct.
+The test suite in `transaction.rs` uses `MockLedger` to run full end-to-end scenarios (Alice sends to Bob, double-spend detection, multi-cell merges) without a running node.
 
 ---
 
-### Transaction lifecycle in the mock
+## block.rs
+
+Block header structure. Currently a stub — the CLI does not need to construct or parse blocks directly, only reference them via header_deps.
+
+---
+
+## Transaction lifecycle on a real network
 
 ```
-1. CkbCell::can_unlock_script(account)        ← ownership check (data layer)
-2. CKBTransaction::create_sighash()           ← compute digest
-3. CKBTransaction::create_signature(sk)       ← sign digest
-4. CKBTransaction::sign(account, cells)       ← embed signature → signed tx
-5. CKBTransaction::validate_spend(i, cells)   ← cryptographic verification
-6. MockLedger::kill_cell(input_op)            ← consume inputs
-7. MockLedger::birth_cell(output_op, ..)      ← create outputs
+1. ckb balance --utxos               → find a cell to spend (get_live_cells)
+2. ckb tx build --from ... --to ...  → construct unsigned tx (fetch cell via get_live_cell)
+3. ckb tx sign --tx tx.json          → sign (create_rpc_sighash → create_rpc_signature)
+4. ckb tx broadcast --tx tx.json     → submit (to_rpc_value → send_transaction)
+5. node validates and mines           → cell state changes on-chain
 ```

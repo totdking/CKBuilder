@@ -1,70 +1,82 @@
 # data
 
-The data layer models the core CKB primitives that exist independently of any specific transaction — accounts, scripts, and cells.
+Core CKB primitives — accounts, cells, and scripts — modelled as Rust structs independently of any specific transaction or network call.
+
+Nothing in this folder talks to a node. These types are the building blocks used by both the CLI layer and the network layer.
 
 ---
 
 ## account.rs
 
-Represents a CKB keypair derived from raw entropy.
+Derives a CKB keypair from a 32-byte secret.
 
-**Derivation chain:**
+### Derivation chain
+
 ```
 32-byte secret
     └── secp256k1 SecretKey
         └── compressed PublicKey (33 bytes)
-            └── Blake2b-256 (personalized: "ckb-default-hash")
-                └── truncate to 20 bytes → pubkey_hash (Blake160)
+            └── Blake2b-256  (personalized: "ckb-default-hash")
+                └── first 20 bytes → pubkey_hash  (Blake160)
 ```
 
-`Account::from_secret(secret: [u8;32])` performs this entire derivation and returns a struct holding the private key and pubkey_hash. The pubkey_hash is what gets embedded into a lock script's `args` field to assert ownership of a cell.
+`Account::from_secret(secret: [u8; 32])` runs this entire chain and returns a struct holding both the private key and the pubkey_hash. The pubkey_hash is the value embedded into a secp256k1 lock script's `args` field to assert ownership of a cell.
 
-`Address::from_script(lock_script: CkbScript)` is a thin wrapper that derives the bech32m address string from a lock script, delegating to `CkbCell::create_address`.
+### Why Blake160?
+
+CKB uses a personalized Blake2b-256 hash (not the standard one) and takes only the first 20 bytes. This matches Ethereum's approach of truncating a public key hash to 20 bytes, keeping address sizes compact while retaining enough collision resistance for a UTXO system.
 
 ---
 
 ## cell.rs
 
-Models the two fundamental CKB on-chain objects: cells and scripts.
+Models the two fundamental CKB on-chain objects: scripts and cells.
 
 ### CkbScript
 
-A script has three fields:
+A script identifies a piece of executable code on-chain and the arguments to pass to it.
 
 | Field | Type | Description |
 |---|---|---|
-| `code_hash` | `[u8;32]` | Blake2b hash identifying the script binary |
+| `code_hash` | `[u8; 32]` | Identifies which script binary to run |
 | `hash_type` | `u8` | How `code_hash` is interpreted: `0`=Data, `1`=Type, `2`=Data1, `4`=Data2 |
-| `args` | `[u8;20]` | Script input — for a lock script this is the owner's pubkey_hash |
+| `args` | `[u8; 20]` | Input to the script — for a secp256k1 lock this is the owner's pubkey_hash |
 
-`CkbScript::pack()` converts the script to its Molecule-serialized form for inclusion in a transaction.
+**`pack() -> Script`** — converts to Molecule-serialized form for inclusion in a transaction (used by the network layer).
 
-`CkbScript::is_valid_hash_type()` guards against undefined hash_type values (only 0, 1, 2, 4 are valid).
+**`is_valid_hash_type() -> bool`** — guards against undefined hash_type values; only 0, 1, 2, and 4 are valid in the CKB spec.
 
 ### CkbCell
 
-A cell has capacity (shannons), optional data, a lock script (who owns it), and an optional type script (what rules govern it).
+A cell is the fundamental unit of state on CKB — analogous to a UTXO in Bitcoin, but capable of carrying arbitrary data.
 
-Key methods:
+| Field | Description |
+|---|---|
+| `capacity` | Storage size in shannons (1 CKB = 100,000,000 shannons) |
+| `data` | Arbitrary bytes stored in the cell |
+| `lock_script` | Defines who can spend this cell (ownership) |
+| `type_script` | Optional rules governing the cell's data (e.g. token contracts) |
 
-**`can_unlock_script(account: &Account) -> bool`**
-Static ownership check — returns true if the account's pubkey_hash matches the lock script's args and the hash_type is valid. This is the first gate before any spend can occur.
+**`can_unlock_script(account) -> bool`** — static ownership check. Returns true if the account's pubkey_hash matches `lock_script.args` and the hash_type is valid. This is the first gate before a spend can be attempted.
 
-**`create_address(lock_script: CkbScript) -> Result<String>`**
-Encodes a lock script into a full CKB bech32m address. The payload is:
+**`create_address(lock_script, network) -> Result<String>`** — encodes a lock script into a full CKB bech32m address. The payload is:
 ```
 0x00 | code_hash (32 bytes) | hash_type (1 byte) | args (20 bytes)
 ```
-encoded with HRP `ckb` (mainnet) or `ckt` (testnet).
+Encoded with HRP `ckb` for mainnet or `ckt` for testnet/devnet.
 
-**`consume_cell` / `create_cell`**
-Wrappers over `MockLedger::kill_cell` and `MockLedger::birth_cell` — used to transition cell state during transaction execution.
-
-**`is_live(ledger, outpoint) -> bool`**
-Delegates to `MockLedger::is_live` to check whether a cell at a given outpoint exists in the live set.
+**`lock_args() -> [u8; 20]`** — convenience accessor for `lock_script.args`, used when deriving change output ownership from an input cell.
 
 ---
 
 ## token.rs
 
-Placeholder for future UDT (User Defined Token) logic. Currently an empty struct.
+Placeholder for future xUDT (extensible User Defined Token) support. Currently an empty struct with no logic.
+
+xUDT is CKB's standard for fungible tokens. When implemented, this will model token amounts attached to cells via type scripts.
+
+---
+
+## mod.rs
+
+Re-exports `Account`, `CkbCell`, and `CkbScript` at the `crate::data` level so other modules can import them without traversing the sub-module paths directly.

@@ -1,7 +1,12 @@
 [package]
-name = "nervos_network"
+name = "ckbuilder"
 version = "0.1.0"
 edition = "2024"
+description = "CKB developer toolkit — manage accounts, check balances, and build/sign/broadcast transactions on Nervos CKB"
+license = "MIT"
+repository = "https://github.com/totdking/CKBuilder"
+keywords = ["ckb", "nervos", "blockchain", "crypto", "cli"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 
 [[bin]]
 name = "ckb"
@@ -24,6 +29,9 @@ blake2b-rs = "0.2.0"
 
 # for address generation from lockscript
 hex = "0.4.3"
+hex-literal = "0.4"
 bech32 = "0.11.1"
 molecule = "0.9.2"
 
+# for CKB node RPC
+reqwest = { version = "0.12", features = ["blocking", "json"] }
