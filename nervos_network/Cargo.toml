@@ -1,6 +1,6 @@
 [package]
 name = "ckbuilder"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "CKB developer toolkit — manage accounts, check balances, and build/sign/broadcast transactions on Nervos CKB"
 license = "MIT"
