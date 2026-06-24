@@ -158,7 +158,7 @@ impl CKBTransaction {
         let mut hash = [0u8; 32];
         hasher.update(raw_tx.as_slice());
         hasher.finalize(&mut hash);
-        return hash;
+        hash
     }
 
     /// creates the message from hashing the raw_tx_hash || witnesses to pass to create-transaction
@@ -190,7 +190,7 @@ impl CKBTransaction {
         // finalize the hasher to the sig-hash
         let mut sig_hash = [0u8; 32];
         hasher.finalize(&mut sig_hash);
-        return sig_hash;
+        sig_hash
     }
 
     /// private_key.sign_recoverable.(sig_hash) this signs the message created by the sig_hash()
@@ -214,7 +214,7 @@ impl CKBTransaction {
         let mut signature = [0u8; 65];
         signature[0..64].copy_from_slice(&sig_bytes);
         signature[64] = recovery_id as u8;
-        return signature;
+        signature
     }
 
     pub fn sign(&mut self, account: &Account, input_cells: &[CkbCell]) -> Result<Transaction> {
@@ -455,7 +455,7 @@ impl CKBTransaction {
             .outputs
             .iter()
             .map(|out| {
-                let type_val = out.type_script.as_ref().map(|s| script_json(s));
+                let type_val = out.type_script.as_ref().map(&script_json);
                 serde_json::json!({
                     "capacity": format!("0x{:x}", out.capacity),
                     "lock": script_json(&out.lock_script),

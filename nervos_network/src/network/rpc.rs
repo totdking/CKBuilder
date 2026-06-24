@@ -3,6 +3,7 @@ use hex_literal::hex;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cmp::Reverse;
 use std::fmt;
 use std::time::Duration;
 
@@ -57,7 +58,7 @@ pub fn estimate_fee(n_inputs: usize, n_outputs: usize) -> u64 {
         + n_outputs * 97
         + 93                                            // first witness
         + n_inputs.saturating_sub(1) * 16; // additional empty witnesses
-    let fee = (size as u64 * FEE_RATE_SHANNONS_PER_KB + 1_023) / 1_024;
+    let fee = (size as u64 * FEE_RATE_SHANNONS_PER_KB).div_ceil(1_024);
     fee.clamp(DEFAULT_FEE, MAX_FEE)
 }
 
@@ -260,7 +261,7 @@ impl CkbRpcClient {
             cursor = Some(next_cursor.to_string());
         }
 
-        cells.sort_by(|a, b| b.capacity.cmp(&a.capacity));
+        cells.sort_by_key(|b| Reverse(b.capacity));
         Ok(cells)
     }
 

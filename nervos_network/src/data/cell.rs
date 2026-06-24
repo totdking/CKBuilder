@@ -28,10 +28,10 @@ pub struct CkbScript {
     /// logic of the address: Multi-sig, Anyway-Can-Pay, Passkey (R1) lock
     #[serde(with = "crate::cli::hex_serde::array32")]
     pub code_hash: [u8; 32],
-    /// - 0	"Data"	code_hash is the Blake2b hash of the binary. Uses VM v0.
-    /// - 1	"Type"	code_hash is the Type CkbScript hash of a cell. Uses latest VM / v2.
-    /// - 2	"Data1"	code_hash is the Blake2b hash of the binary. Uses VM v1.
-    /// - 4	"Data2"	code_hash is the Blake2b hash of the binary. Uses VM v2.
+    /// - 0    "Data"    code_hash is the Blake2b hash of the binary. Uses VM v0.
+    /// - 1    "Type"    code_hash is the Type CkbScript hash of a cell. Uses latest VM / v2.
+    /// - 2    "Data1"   code_hash is the Blake2b hash of the binary. Uses VM v1.
+    /// - 4    "Data2"   code_hash is the Blake2b hash of the binary. Uses VM v2.
     pub hash_type: u8,
     /// Arguments as the CkbScript input(20 bytes): **pubkey_hash of Account** i.e. for lockscript
     ///
@@ -77,13 +77,7 @@ impl CkbScript {
 
     /// if the hashtype is a valid one
     pub fn is_valid_hash_type(&self) -> bool {
-        match self.hash_type {
-            0 => true,
-            1 => true,
-            2 => true,
-            4 => true,
-            _ => false,
-        }
+        matches!(self.hash_type, 0 | 1 | 2 | 4)
     }
 
     /// returns hashtype of lockscript
@@ -102,7 +96,7 @@ impl CkbScript {
     pub fn pack(&self) -> Script {
         Script::new_builder()
             .code_hash(Byte32::from_slice(&self.code_hash).unwrap())
-            .hash_type::<u8>(self.hash_type.into())
+            .hash_type::<u8>(self.hash_type)
             .args(Bytes::from(self.args.to_vec()))
             .build()
     }

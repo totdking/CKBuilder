@@ -34,10 +34,10 @@ fn default_config_path() -> PathBuf {
 
 fn load_config() -> CkbConfig {
     let path = default_config_path();
-    if let Ok(json) = std::fs::read_to_string(&path) {
-        if let Ok(cfg) = serde_json::from_str::<CkbConfig>(&json) {
-            return cfg;
-        }
+    if let Ok(json) = std::fs::read_to_string(&path)
+        && let Ok(cfg) = serde_json::from_str::<CkbConfig>(&json)
+    {
+        return cfg;
     }
     CkbConfig {
         network: Network::Testnet,
