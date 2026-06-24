@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/totdking/CKBuilder"
 keywords = ["ckb", "nervos", "blockchain", "crypto", "cli"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
+exclude = [".DS_Store", "ix.md", "src/**/.DS_Store"]
 
 [[bin]]
 name = "ckb"
