@@ -8,13 +8,25 @@ A command-line tool for working with the [Nervos CKB](https://www.nervos.org/) b
 
 **Requirements:** Rust toolchain ([rustup.rs](https://rustup.rs))
 
+### From crates.io (recommended)
+
 ```sh
-git clone <repo-url>
-cd nervos_network
+cargo install ckbuilder
+```
+
+This fetches the latest published release, builds it, and puts the `ckb` binary on your PATH. That's it.
+
+### From source
+
+```sh
+git clone https://github.com/totdking/CKBuilder
+cd CKBuilder/nervos_network
 cargo install --path .
 ```
 
-This builds a release binary and puts `ckb` on your PATH. To update after code changes, re-run the same command.
+Use this if you want the latest unreleased changes.
+
+### Verify
 
 ```sh
 ckb --help
