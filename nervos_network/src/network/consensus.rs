@@ -18,6 +18,7 @@ pub struct MockLedger {
 }
 
 #[cfg(test)]
+#[allow(unused)]
 impl MockLedger {
     pub fn is_live(&self, outpoint: &OutPoint) -> bool {
         // self.live_cell.contains_key(outpoint)
@@ -156,7 +157,7 @@ mod tests {
         assert!(ledger.is_live(&outpoint));
 
         // kill it
-        ledger.kill_cell(&outpoint);
+        ledger.kill_cell(&outpoint).unwrap();
         assert!(!ledger.is_live(&outpoint));
         assert_eq!(ledger.live_cell.len(), 0);
     }

@@ -53,6 +53,7 @@ pub enum HashType {
 
 impl CkbScript {
     #[cfg(test)]
+    #[allow(unused)]
     pub fn create_rand_lock_script() -> Result<Self> {
         use rand::{Rng, rng};
 
