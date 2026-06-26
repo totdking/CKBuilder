@@ -231,11 +231,21 @@ pub enum Commands {
     Account(AccountCmd),
     /// Advanced: derive a bech32m address from arbitrary lock script parameters
     Address(AddressArgs),
+    /// Request testnet CKB from the Nervos faucet (testnet only)
+    Airdrop(AirdropArgs),
     /// Check the CKB balance of any address on the active network
     Balance(BalanceArgs),
+    /// Inspect a live cell by outpoint (capacity, lock, type script, data)
+    Cell(CellArgs),
+    /// Fetch a block by number or hash
+    Block(BlockArgs),
     /// Get or set the active network (testnet / mainnet / devnet)
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Call any CKB JSON-RPC method directly
+    Rpc(RpcArgs),
+    /// Show the current chain tip (block number and hash)
+    Tip(TipArgs),
     /// Build, sign, inspect, and broadcast transactions
     #[command(subcommand)]
     Tx(TxCmd),
@@ -312,6 +322,17 @@ pub struct BalanceArgs {
     pub rpc: Option<String>,
 }
 
+// ── Airdrop ──────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct AirdropArgs {
+    /// Amount of testnet CKB to request. Must be 10000, 100000, or 300000. Defaults to 10000.
+    pub amount: Option<String>,
+    /// Recipient testnet address (ckt1q...). Omit to use your saved keypair address.
+    #[arg(long)]
+    pub address: Option<String>,
+}
+
 // ── Address ──────────────────────────────────────────────────────────────────
 
 #[derive(Args)]
@@ -325,6 +346,53 @@ pub struct AddressArgs {
     pub args: String,
 }
 
+// ── Cell ─────────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct CellArgs {
+    /// Outpoint to inspect, format: <txhash>:<index>  e.g. 0xabc...:0
+    pub outpoint: String,
+    /// Also fetch and display cell data (may be large)
+    #[arg(long)]
+    pub data: bool,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
+}
+
+// ── Tip ──────────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct TipArgs {
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
+}
+
+// ── Block ─────────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct BlockArgs {
+    /// Block number (decimal) or block hash (0x-prefixed 32-byte hex)
+    pub target: String,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
+}
+
+// ── Rpc ──────────────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct RpcArgs {
+    /// JSON-RPC method name (e.g. get_tip_block_number, get_live_cells)
+    pub method: String,
+    /// Parameters as a JSON array string (default: [])
+    pub params: Option<String>,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
+}
+
 // ── Tx ───────────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -335,10 +403,23 @@ pub enum TxCmd {
     Sign(SignArgs),
     /// Broadcast a signed transaction JSON file to the active network
     Broadcast(BroadcastArgs),
+    /// Pretty-print a transaction JSON file (inputs, outputs, scripts, hash)
+    Decode(TxFileArg),
     /// Print the CKB-node-compatible tx hash of a transaction JSON file
     Hash(TxFileArg),
     /// Build, sign, and broadcast a CKB transfer in one step
     Send(SendArgs),
+    /// Check the on-chain status of a transaction (pending / committed / rejected)
+    Status(TxStatusArgs),
+}
+
+#[derive(Args)]
+pub struct TxStatusArgs {
+    /// Transaction hash (32-byte hex, with or without 0x prefix)
+    pub tx_hash: String,
+    /// Override the RPC endpoint (defaults to active network)
+    #[arg(long)]
+    pub rpc: Option<String>,
 }
 
 #[derive(Args)]
@@ -426,8 +507,13 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Account(cmd) => cmd_account(cmd, cli.devnet),
         Commands::Address(args) => cmd_address(args),
+        Commands::Airdrop(args) => cmd_airdrop(args),
         Commands::Balance(args) => cmd_balance(args, cli.devnet),
+        Commands::Block(args) => cmd_block(args, cli.devnet),
+        Commands::Cell(args) => cmd_cell(args, cli.devnet),
         Commands::Config(cmd) => cmd_config(cmd),
+        Commands::Rpc(args) => cmd_rpc(args, cli.devnet),
+        Commands::Tip(args) => cmd_tip(args, cli.devnet),
         Commands::Tx(cmd) => cmd_tx(cmd, cli.devnet),
     }
 }
@@ -447,6 +533,124 @@ fn active_network(cfg: &CkbConfig, devnet_flag: bool) -> Network {
     } else {
         cfg.network
     }
+}
+
+fn cmd_airdrop(args: AirdropArgs) -> Result<()> {
+    const FAUCET_URL: &str = "https://faucet-api.nervos.org/claim_events";
+    const VALID_AMOUNTS: &[&str] = &["10000", "100000", "300000"];
+    const FAUCET_DEFAULT_AMOUNT: &str = "10000";
+
+    // Resolve the recipient address
+    let address = match args.address {
+        Some(ref addr) => {
+            if !addr.starts_with("ckt1") {
+                return Err(anyhow!(
+                    "airdrop is testnet-only — address must start with 'ckt1', got '{}'",
+                    addr
+                ));
+            }
+            addr.clone()
+        }
+        None => {
+            // Load from saved keypair
+            let kp_path = default_keypair_path();
+            let json = std::fs::read_to_string(&kp_path).map_err(|_| {
+                anyhow!(
+                    "no keypair found at {}\nRun `ckb account new` to generate one, or pass --address",
+                    kp_path.display()
+                )
+            })?;
+            let kf: KeyFile = serde_json::from_str(&json)
+                .map_err(|e| anyhow!("keypair file is malformed: {}", e))?;
+            kf.address_testnet.clone()
+        }
+    };
+
+    let amount_str = args
+        .amount
+        .as_deref()
+        .unwrap_or(FAUCET_DEFAULT_AMOUNT)
+        .to_string();
+
+    if !VALID_AMOUNTS.contains(&amount_str.as_str()) {
+        return Err(anyhow!(
+            "invalid amount '{}' — the faucet only accepts: {}",
+            amount_str,
+            VALID_AMOUNTS.join(", ")
+        ));
+    }
+
+    println!("requesting {} CKB from faucet ...", amount_str);
+    println!("address:  {}", address);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let body = serde_json::json!({
+        "claim_event": {
+            "address_hash": address,
+            "amount": amount_str
+        }
+    });
+
+    let resp = client
+        .post(FAUCET_URL)
+        .header("Accept", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| anyhow!("failed to reach faucet: {}", e))?;
+
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .map_err(|e| anyhow!("failed to read faucet response: {}", e))?;
+
+    let json: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+        anyhow!(
+            "faucet returned a non-JSON response (HTTP {}):\n{}",
+            status,
+            raw.trim()
+        )
+    })?;
+
+    if status.is_success() {
+        let data = &json["data"];
+        let claimed = data["amount"].as_str().unwrap_or(&amount_str);
+        let claim_status = data["status"].as_str().unwrap_or("pending");
+        println!("status:   {}", claim_status);
+        println!("amount:   {} CKB", claimed);
+        println!(
+            "explorer: {}/address/{}",
+            Network::Testnet.explorer_base(),
+            address
+        );
+        if claim_status == "pending" {
+            println!("note:     the faucet queues claims — CKB will arrive within a few minutes");
+        }
+    } else {
+        // Surface faucet error message
+        let msg = json
+            .get("error_message")
+            .or_else(|| json.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        let errors = json
+            .get("errors")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if errors.is_null() {
+            return Err(anyhow!("faucet error (HTTP {}): {}", status, msg));
+        }
+        return Err(anyhow!(
+            "faucet error (HTTP {}): {} — {}",
+            status,
+            msg,
+            errors
+        ));
+    }
+
+    Ok(())
 }
 
 fn cmd_config(cmd: ConfigCmd) -> Result<()> {
@@ -844,10 +1048,113 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
             }
         }
 
+        TxCmd::Decode(args) => {
+            let json = std::fs::read_to_string(&args.tx)?;
+            let tx: CKBTransaction = serde_json::from_str(&json)?;
+
+            println!("version:   {}", tx.version);
+
+            println!("inputs ({}):", tx.inputs.len());
+            for (i, inp) in tx.inputs.iter().enumerate() {
+                println!(
+                    "  [{}]  0x{}:{}  since={}",
+                    i,
+                    hex::encode(inp.previous_outpoint.tx_hash),
+                    inp.previous_outpoint.index,
+                    inp.since
+                );
+            }
+
+            println!("outputs ({}):", tx.outputs.len());
+            for (i, out) in tx.outputs.iter().enumerate() {
+                let hash_type_str = match out.lock_script.hash_type {
+                    0 => "data",
+                    1 => "type",
+                    2 => "data1",
+                    4 => "data2",
+                    x => Box::leak(format!("0x{:x}", x).into_boxed_str()),
+                };
+                let type_str = if out.type_script.is_some() {
+                    "yes"
+                } else {
+                    "none"
+                };
+                println!(
+                    "  [{}]  {:.8} CKB  lock: {}/0x{:.16}../args=0x{}  type: {}",
+                    i,
+                    out.capacity as f64 / 1e8,
+                    hash_type_str,
+                    hex::encode(out.lock_script.code_hash),
+                    hex::encode(out.lock_script.args),
+                    type_str,
+                );
+            }
+
+            println!("cell_deps ({}):", tx.cell_deps.len());
+            for (i, dep) in tx.cell_deps.iter().enumerate() {
+                let dep_type_str = if dep.dep_type == 1 {
+                    "dep_group"
+                } else {
+                    "code"
+                };
+                println!(
+                    "  [{}]  0x{}:{}  {}",
+                    i,
+                    hex::encode(dep.outpoint.tx_hash),
+                    dep.outpoint.index,
+                    dep_type_str
+                );
+            }
+
+            println!("witnesses ({}):", tx.witnesses.len());
+            for (i, w) in tx.witnesses.iter().enumerate() {
+                match &w.lock {
+                    Some(sig) if !sig.is_empty() => {
+                        println!("  [{}]  0x{}  ({} bytes)", i, hex::encode(sig), sig.len())
+                    }
+                    _ => println!("  [{}]  0x  (empty)", i),
+                }
+            }
+
+            println!("tx hash:   0x{}", hex::encode(tx.rpc_raw_tx_hash()));
+        }
+
         TxCmd::Hash(args) => {
             let json = std::fs::read_to_string(&args.tx)?;
             let tx: CKBTransaction = serde_json::from_str(&json)?;
             println!("0x{}", hex::encode(tx.rpc_raw_tx_hash()));
+        }
+
+        TxCmd::Status(args) => {
+            let cfg = load_config();
+            let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+            let rpc = CkbRpcClient::new(&rpc_url);
+
+            let hash = parse32(&args.tx_hash)?;
+            let result = rpc.get_transaction(hash)?;
+
+            let tx_status = &result["tx_status"];
+            let status = tx_status["status"].as_str().unwrap_or("unknown");
+            let block_hash = tx_status["block_hash"]
+                .as_str()
+                .unwrap_or("(not yet committed)");
+            let block_number = tx_status["block_number"]
+                .as_str()
+                .map(|s| {
+                    u64::from_str_radix(s.trim_start_matches("0x"), 16)
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|_| s.to_string())
+                })
+                .unwrap_or_else(|| "(not yet committed)".to_string());
+
+            println!("status:       {}", status);
+            println!("block_hash:   {}", block_hash);
+            println!("block_number: {}", block_number);
+
+            if status == "rejected" {
+                let reason = tx_status["reason"].as_str().unwrap_or("unknown");
+                println!("reason:       {}", reason);
+            }
         }
 
         TxCmd::Send(args) => {
@@ -991,5 +1298,147 @@ fn cmd_tx(cmd: TxCmd, devnet_flag: bool) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn cmd_cell(args: CellArgs, devnet_flag: bool) -> Result<()> {
+    let cfg = load_config();
+    let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+    let net = active_network(&cfg, devnet_flag);
+    let rpc = CkbRpcClient::new(&rpc_url);
+
+    let (tx_hash, index) = parse_outpoint_str(&args.outpoint)?;
+    let out_point = crate::network::transaction::OutPoint { tx_hash, index };
+    let cell = rpc.get_cell(&out_point, args.data)?;
+
+    let output = &cell["output"];
+    let cap_hex = output["capacity"].as_str().unwrap_or("0x0");
+    let capacity = u64::from_str_radix(cap_hex.trim_start_matches("0x"), 16)
+        .map_err(|_| anyhow!("could not parse capacity '{}'", cap_hex))?;
+
+    println!("network:    {}", net);
+    println!("outpoint:   0x{}:{}", hex::encode(tx_hash), index);
+    println!(
+        "capacity:   {:.8} CKB  ({} shannons)",
+        capacity as f64 / 1e8,
+        capacity
+    );
+
+    let lock = &output["lock"];
+    println!("lock:");
+    println!(
+        "  code_hash:  {}",
+        lock["code_hash"].as_str().unwrap_or("?")
+    );
+    println!(
+        "  hash_type:  {}",
+        lock["hash_type"].as_str().unwrap_or("?")
+    );
+    println!("  args:       {}", lock["args"].as_str().unwrap_or("?"));
+
+    match output.get("type") {
+        Some(t) if !t.is_null() => {
+            println!("type:");
+            println!("  code_hash:  {}", t["code_hash"].as_str().unwrap_or("?"));
+            println!("  hash_type:  {}", t["hash_type"].as_str().unwrap_or("?"));
+            println!("  args:       {}", t["args"].as_str().unwrap_or("?"));
+        }
+        _ => println!("type:       (none)"),
+    }
+
+    if args.data {
+        let data = cell["data"]["content"].as_str().unwrap_or("0x");
+        if data == "0x" || data.is_empty() {
+            println!("data:       0x  (empty)");
+        } else {
+            println!("data:       {}", data);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_tip(args: TipArgs, devnet_flag: bool) -> Result<()> {
+    let cfg = load_config();
+    let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+    let net = active_network(&cfg, devnet_flag);
+    let rpc = CkbRpcClient::new(&rpc_url);
+
+    let header = rpc.get_tip_header()?;
+
+    let number_hex = header["number"].as_str().unwrap_or("0x0");
+    let number = u64::from_str_radix(number_hex.trim_start_matches("0x"), 16)
+        .map_err(|_| anyhow!("could not parse block number"))?;
+    let hash = header["hash"].as_str().unwrap_or("?");
+    let timestamp = header["timestamp"].as_str().unwrap_or("?");
+
+    println!("network:    {}", net);
+    println!("block:      {}", number);
+    println!("hash:       {}", hash);
+    println!("timestamp:  {}  (unix ms)", timestamp);
+
+    Ok(())
+}
+
+fn cmd_block(args: BlockArgs, devnet_flag: bool) -> Result<()> {
+    let cfg = load_config();
+    let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+    let net = active_network(&cfg, devnet_flag);
+    let rpc = CkbRpcClient::new(&rpc_url);
+
+    let block = if args.target.starts_with("0x") && args.target.len() == 66 {
+        let hash = parse32(&args.target)?;
+        rpc.get_block(hash)?
+    } else {
+        let n: u64 = args.target.parse().map_err(|_| {
+            anyhow!(
+                "invalid block target '{}' — use a decimal number or 0x-prefixed 32-byte hash",
+                args.target
+            )
+        })?;
+        rpc.get_block_by_number(n)?
+    };
+
+    let header = &block["header"];
+    let number_hex = header["number"].as_str().unwrap_or("0x0");
+    let number = u64::from_str_radix(number_hex.trim_start_matches("0x"), 16)
+        .map_err(|_| anyhow!("could not parse block number"))?;
+    let hash = header["hash"].as_str().unwrap_or("?");
+    let timestamp = header["timestamp"].as_str().unwrap_or("?");
+    let tx_count = block["transactions"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    println!("network:    {}", net);
+    println!("number:     {}", number);
+    println!("hash:       {}", hash);
+    println!("timestamp:  {}  (unix ms)", timestamp);
+    println!("txs:        {}", tx_count);
+    println!("explorer:   {}/block/{}", net.explorer_base(), hash);
+
+    Ok(())
+}
+
+fn cmd_rpc(args: RpcArgs, devnet_flag: bool) -> Result<()> {
+    let cfg = load_config();
+    let rpc_url = active_rpc(&cfg, args.rpc.as_deref(), devnet_flag);
+    let rpc = CkbRpcClient::new(&rpc_url);
+
+    let params: serde_json::Value = match args.params {
+        Some(ref s) => serde_json::from_str(s)
+            .map_err(|e| anyhow!("params must be a valid JSON array: {}", e))?,
+        None => serde_json::json!([]),
+    };
+
+    if !params.is_array() {
+        return Err(anyhow!(
+            "params must be a JSON array, e.g. '[]' or '[\"0x1\"]'"
+        ));
+    }
+
+    let result = rpc.call(&args.method, params)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+
     Ok(())
 }

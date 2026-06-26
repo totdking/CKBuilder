@@ -1,10 +1,11 @@
 [package]
 name = "ckbuilder"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "CKB developer toolkit — manage accounts, check balances, and build/sign/broadcast transactions on Nervos CKB"
 license = "MIT"
 repository = "https://github.com/totdking/CKBuilder/tree/main/nervos_network"
+changelog = "https://github.com/totdking/CKBuilder/blob/main/nervos_network/CHANGELOG.md"
 keywords = ["ckb", "nervos", "blockchain", "crypto", "cli"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 exclude = [".DS_Store", "ix.md", "src/**/.DS_Store"]

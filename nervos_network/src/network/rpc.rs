@@ -265,6 +265,51 @@ impl CkbRpcClient {
         Ok(cells)
     }
 
+    /// Fetches the full details of a live cell including type script and data.
+    pub fn get_cell(&self, out_point: &OutPoint, with_data: bool) -> Result<Value> {
+        let params = json!([{
+            "tx_hash": format!("0x{}", hex::encode(out_point.tx_hash)),
+            "index":   format!("0x{:x}", out_point.index),
+        }, with_data]);
+        let result = self.rpc("get_live_cell", params)?;
+        let status = result["status"].as_str().unwrap_or("unknown");
+        if status != "live" {
+            return Err(anyhow!(
+                "cell {}:{} is not live (status: {})",
+                hex::encode(out_point.tx_hash),
+                out_point.index,
+                status
+            ));
+        }
+        Ok(result["cell"].clone())
+    }
+
+    /// Fetches a transaction and its on-chain status.
+    pub fn get_transaction(&self, tx_hash: [u8; 32]) -> Result<Value> {
+        let params = json!([format!("0x{}", hex::encode(tx_hash))]);
+        self.rpc("get_transaction", params)
+    }
+
+    /// Fetches the tip block header (number, hash, timestamp).
+    pub fn get_tip_header(&self) -> Result<Value> {
+        self.rpc("get_tip_header", json!([]))
+    }
+
+    /// Fetches a block by its number.
+    pub fn get_block_by_number(&self, number: u64) -> Result<Value> {
+        self.rpc("get_block_by_number", json!([format!("0x{:x}", number)]))
+    }
+
+    /// Fetches a block by its hash.
+    pub fn get_block(&self, hash: [u8; 32]) -> Result<Value> {
+        self.rpc("get_block", json!([format!("0x{}", hex::encode(hash))]))
+    }
+
+    /// Raw JSON-RPC passthrough — returns the `result` field as-is.
+    pub fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.rpc(method, params)
+    }
+
     /// Broadcasts a signed transaction to the CKB node.
     /// Returns the transaction hash (32 bytes).
     pub fn send_transaction(&self, tx_json: Value) -> Result<[u8; 32]> {
