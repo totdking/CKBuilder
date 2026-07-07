@@ -138,3 +138,26 @@ A clap-based command-line tool that accepts human-readable inputs throughout:
 **CI/CD pipeline**
 
 `.github/workflows/ci.yml` runs on every push and pull request: format check (`cargo fmt`), build, tests, and clippy with `-D warnings`.
+
+### Week 9: [21-06-2026 to 26-06-2026]
+
+Extended `ckbuilder` from a transaction-building tool into a fuller chain-inspection and dev-utility CLI.
+
+**What I learnt**
+
+- **Faucets are just another RPC-backed service** — `faucet.nervos.org` accepts a fixed set of testnet claim amounts (10000 / 100000 / 300000 CKB) per address. Wiring up `ckb airdrop` was less about CKB internals and more about treating the faucet as an external API with its own validation rules.
+- **A raw RPC passthrough is a force multiplier for debugging** — rather than adding a dedicated command for every CKB node method, `ckb rpc <method> [params]` forwards arbitrary JSON-RPC calls straight to the node and pretty-prints the response. This covers any method not yet wrapped by a first-class command.
+- **Transaction status is a distinct query from transaction existence** — `get_transaction` returns not just the transaction body but a status enum (`pending` / `proposed` / `committed` / `rejected`). `ckb tx status` surfaces just that enum, which is what you actually want to know after broadcasting.
+- **Decoding before signing catches mistakes early** — `ckb tx decode` pretty-prints a transaction file's inputs, outputs, scripts, and witnesses so a builder can sanity-check what they're about to sign, rather than discovering an error only after broadcast fails.
+
+**What I built**
+
+- `ckb airdrop [amount] [--address]` — request testnet CKB from the faucet
+- `ckb cell <txhash>:<index> [--data]` — inspect any live cell's capacity, lock script, type script, and optional data
+- `ckb tip` — show the current chain tip (block number + hash)
+- `ckb block <number|hash>` — fetch a block by decimal number or 0x-prefixed hash
+- `ckb rpc <method> [params]` — raw JSON-RPC passthrough for any CKB node method
+- `ckb tx decode --tx <file>` — pretty-print a transaction file before signing
+- `ckb tx status <txhash>` — check on-chain status of a transaction
+
+See [`nervos_network/CHANGELOG.md`](nervos_network/CHANGELOG.md) for the full versioned changelog and [`nervos_network/README.md`](nervos_network/README.md) for command documentation.
